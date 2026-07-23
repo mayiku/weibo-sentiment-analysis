@@ -49,6 +49,10 @@ class ReportSamplingTests(unittest.TestCase):
             "本次样本同时涉及赛事和明星。微博标称32565条评论，实际分析379条。", sampling
         )
         self.assertEqual(safe, [])
+        conditional = generator._validate_report(
+            "如果负面反馈持续上升，则应启动专项回应。", sampling
+        )
+        self.assertEqual(conditional, [])
 
     def test_report_validator_rejects_incorrect_report_date(self):
         generator = ReportGenerator.__new__(ReportGenerator)

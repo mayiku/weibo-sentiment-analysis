@@ -1263,7 +1263,7 @@ if result:
         else:
             import hashlib
             cache_raw = json.dumps({
-                'report_format': 5,
+                'report_format': 6,
                 'topic': current_topic, 'keywords_top10': [w for w, _ in (result.get('keywords', []) or [])[:10]],
                 'stats': {k: result.get(k, 0) for k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
                 'posts_count': len(result.get('posts', [])),

@@ -245,6 +245,25 @@ class ReportGenerator:
         r"(?:仍将|将逐渐|将持续|将进一步)",
         r"(?:正在|持续)(?:上升|下降|升温|降温|扩散)",
     )
+    _CONDITIONAL_MARKERS = (
+        r"(?:若|如果|如若|一旦|假设|可能|或将)",
+        r"在[^。！？\n]{0,30}情况下",
+        r"(?:取决于|视)[^。！？\n]{0,20}",
+    )
+
+    def _has_unconditional_temporal_claim(self, report: str) -> bool:
+        """Return True only for trend language stated as fact, not scenarios."""
+        for pattern in self._TEMPORAL_PATTERNS:
+            for match in re.finditer(pattern, report):
+                sentence_start = max(
+                    report.rfind(mark, 0, match.start()) for mark in "。！？\n"
+                ) + 1
+                context = report[sentence_start:match.start()]
+                if not any(
+                    re.search(marker, context) for marker in self._CONDITIONAL_MARKERS
+                ):
+                    return True
+        return False
 
     def _validate_report(
         self, report: str, sampling: dict, expected_report_date: str | None = None
@@ -252,7 +271,7 @@ class ReportGenerator:
         """Reject unsupported trend claims and nominal/sample count confusion."""
         issues = []
         if not sampling.get('temporal_evidence'):
-            if any(re.search(pattern, report) for pattern in self._TEMPORAL_PATTERNS):
+            if self._has_unconditional_temporal_claim(report):
                 issues.append('unsupported_temporal_claim')
 
         if expected_report_date:
@@ -309,7 +328,7 @@ class ReportGenerator:
                    keywords: list, sampling: dict = None) -> str:
         """生成缓存键（基于输入数据的哈希）"""
         raw = json.dumps({
-            'report_format': 5,
+            'report_format': 6,
             'topic': topic,
             'stats': {k: v for k, v in stats.items() if k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
             'posts_count': len(posts),
