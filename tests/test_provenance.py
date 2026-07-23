@@ -56,12 +56,15 @@ class ProvenanceTests(unittest.TestCase):
                     effective_model="snownlp", fallback_used=True,
                     fallback_reason="test", quality_status="warning",
                     quality_issues_json='[{"code":"model_fallback"}]',
+                    processing_time=1.25, model_memory=8.5,
                 )
                 database.update_task_report(task_id, "/tmp/report.md", "deepseek")
                 task = database.get_task(task_id)
                 self.assertEqual(task["effective_model"], "snownlp")
                 self.assertEqual(task["quality_status"], "warning")
                 self.assertEqual(task["report_provider"], "deepseek")
+                self.assertEqual(task["processing_time"], 1.25)
+                self.assertEqual(task["model_memory"], 8.5)
             finally:
                 database.DATABASE_PATH = original_path
 

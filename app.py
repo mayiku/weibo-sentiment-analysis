@@ -361,11 +361,29 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
 
     # 确定模型类型
     if model_type is None:
-        model_type = st.session_state.get('selected_model', 'snownlp')
+        model_type = st.session_state.get('selected_model', 'hybrid')
 
     log.info(f"使用情感分析模型: {model_type}")
+    analysis_started = time.perf_counter()
+    memory_before_mb = None
+    try:
+        import psutil
+        memory_before_mb = psutil.Process().memory_info().rss / 1024 / 1024
+    except Exception:
+        pass
+
     df = analyze_sentiment(df, model_type=model_type)
+    processing_time = time.perf_counter() - analysis_started
+    model_memory = None
+    if memory_before_mb is not None:
+        try:
+            memory_after_mb = psutil.Process().memory_info().rss / 1024 / 1024
+            model_memory = max(0.0, memory_after_mb - memory_before_mb)
+        except Exception:
+            pass
     analysis_metadata = dict(df.attrs.get('analysis_metadata', {}))
+    analysis_metadata['processing_time'] = processing_time
+    analysis_metadata['model_memory'] = model_memory
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_csv = OUTPUT_DIR / f"result_{topic}_{timestamp}.csv"
@@ -488,6 +506,8 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
         unique_comments=stats.get('unique_total', stats['total']),
         sampling_json=json.dumps(crawl_metadata, ensure_ascii=False),
         representation_status=crawl_metadata.get('representation_status', 'unknown'),
+        processing_time=processing_time,
+        model_memory=model_memory,
     )
     if quality['status'] == 'invalid':
         message = '；'.join(issue['message'] for issue in quality['issues'])
@@ -511,6 +531,8 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
         'source': 'crawler' if structured_json else 'upload',
         'cleaning_metadata': cleaning_metadata,
         'analysis_metadata': analysis_metadata,
+        'processing_time': processing_time,
+        'model_memory': model_memory,
         'crawl_metadata': crawl_metadata,
         'quality': quality,
         'wc_path': wc_path,
@@ -596,6 +618,7 @@ with st.sidebar:
         "paddle": "PaddleNLP 二分类模型",
         "bert": "预训练二分类模型",
         "hybrid": "SnowNLP 与微博语义规则增强",
+        "deepseek": "DeepSeek 语义三分类，高准确度模式",
     }
     with st.expander("高级设置", expanded=False):
         try:
@@ -603,9 +626,9 @@ with st.sidebar:
         except Exception:
             configured_models = ["snownlp"]
 
-        selected_model = st.session_state.get('selected_model', 'snownlp')
+        selected_model = st.session_state.get('selected_model', 'hybrid')
         if selected_model not in configured_models:
-            selected_model = "snownlp"
+            selected_model = "hybrid" if "hybrid" in configured_models else configured_models[0]
         selected_model = st.radio(
             "情绪分析模型",
             configured_models,
@@ -648,7 +671,7 @@ with st.sidebar:
             )
 
         st.markdown("##### 模型运行自检")
-        if st.button("运行四模型自检", key="run_model_health_check", width='stretch'):
+        if st.button("运行模型自检", key="run_model_health_check", width='stretch'):
             with st.spinner("正在执行真实单条与批量推理..."):
                 check_model_health.cache_clear()
                 st.session_state['model_health_report'] = get_model_health_report()
@@ -754,7 +777,7 @@ if start_btn:
 
         with st.status("处理上传数据", expanded=True) as pipeline_status:
             pipeline_status.update(label="步骤 1/2 · 数据清洗与情绪分析", state="running")
-            model_type = st.session_state.get('selected_model', 'snownlp')
+            model_type = st.session_state.get('selected_model', 'hybrid')
             result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
             st.write(f"分析完成 · {result['total']} 条评论 · {model_type.upper()}")
 
@@ -845,7 +868,7 @@ if start_btn:
 
             # 步骤4-7: 后续处理
             update_progress(3, "· 数据清洗")
-            model_type = st.session_state.get('selected_model', 'snownlp')
+            model_type = st.session_state.get('selected_model', 'hybrid')
             result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
             st.write(f"{result['total']} 条评论 · 积极 {result['pos_pct']}% · 中性 {result['neu_pct']}% · 消极 {result['neg_pct']}%")
 
@@ -927,6 +950,8 @@ if result is None and 'selected_task' in st.session_state:
                 'fallback_used': bool(task.get('fallback_used')),
                 'fallback_reason': task.get('fallback_reason'),
             },
+            'processing_time': task.get('processing_time'),
+            'model_memory': task.get('model_memory'),
             'crawl_metadata': {
                 'expected_comments': task.get('expected_comments'),
                 'fetched_comments': task.get('fetched_comments'),
@@ -1088,8 +1113,10 @@ if result:
             current_model = effective_model
             st.caption(f"实际模型 · {str(current_model).upper()}")
             col1, col2, col3 = st.columns(3)
-            col1.metric("分析耗时", f"{result['processing_time']:.2f}s" if 'processing_time' in result else "N/A")
-            col2.metric("内存使用", f"{result['model_memory']}MB" if 'model_memory' in result else "N/A")
+            processing_time = result.get('processing_time')
+            model_memory = result.get('model_memory')
+            col1.metric("分析耗时", f"{processing_time:.2f}s" if processing_time is not None else "未记录")
+            col2.metric("内存增量", f"{model_memory:.1f}MB" if model_memory is not None else "未记录")
             col3.metric("处理样本", f"{result.get('total', 0)} 条")
 
             if st.button("多模型对比", type="secondary"):

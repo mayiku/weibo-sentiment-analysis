@@ -107,7 +107,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================================
 
 # 默认情感分析模型
-DEFAULT_SENTIMENT_MODEL = "paddle"  # "snownlp" | "paddle" | "bert" | "hybrid"
+DEFAULT_SENTIMENT_MODEL = "hybrid"  # 云端默认使用轻量微博规则增强模型
 
 # 情感分析阈值（兼容原有配置）
 SENTIMENT_POS_THRESHOLD = 0.6
@@ -156,6 +156,8 @@ DEEPSEEK_MAX_TOKENS = int(_os.getenv("DEEPSEEK_MAX_TOKENS", "4096"))
 DEEPSEEK_TEMPERATURE = float(_os.getenv("DEEPSEEK_TEMPERATURE", "0.3"))
 DEEPSEEK_TIMEOUT = int(_os.getenv("DEEPSEEK_TIMEOUT", "120"))
 DEEPSEEK_MAX_RETRIES = int(_os.getenv("DEEPSEEK_MAX_RETRIES", "3"))
+DEEPSEEK_SENTIMENT_BATCH_SIZE = int(_os.getenv("DEEPSEEK_SENTIMENT_BATCH_SIZE", "30"))
+DEEPSEEK_SENTIMENT_MAX_TEXT_LENGTH = int(_os.getenv("DEEPSEEK_SENTIMENT_MAX_TEXT_LENGTH", "280"))
 
 # SiliconFlow 配置 (可选)
 SILICONFLOW_API_KEY = _os.getenv("SILICONFLOW_API_KEY", "")

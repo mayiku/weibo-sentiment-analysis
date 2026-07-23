@@ -1,6 +1,6 @@
 """
 新版情感分析模块 - 多模型支持的统一接口
-支持 SnowNLP、PaddleNLP、BERT、Hybrid 四种分析模式
+支持 Hybrid、DeepSeek、SnowNLP、PaddleNLP、BERT 分析模式
 """
 
 from .base import SentimentAnalyzer, SentimentResult, ModelInfo, AnalyzerFactory
@@ -63,4 +63,7 @@ def __getattr__(name):
     if name == 'HybridAnalyzer':
         from .hybrid_analyzer import HybridAnalyzer
         return HybridAnalyzer
+    if name == 'DeepSeekSentimentAnalyzer':
+        from .deepseek_analyzer import DeepSeekSentimentAnalyzer
+        return DeepSeekSentimentAnalyzer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

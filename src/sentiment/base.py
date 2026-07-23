@@ -158,7 +158,7 @@ class AnalyzerFactory:
     """分析器工厂类"""
 
     @staticmethod
-    def create_analyzer(analyzer_type: str = "paddle", **kwargs) -> SentimentAnalyzer:
+    def create_analyzer(analyzer_type: str = "hybrid", **kwargs) -> SentimentAnalyzer:
         """
         创建情感分析器实例
 
@@ -194,13 +194,17 @@ class AnalyzerFactory:
             from .hybrid_analyzer import HybridAnalyzer
             return HybridAnalyzer(**kwargs)
 
+        elif analyzer_type == "deepseek":
+            from .deepseek_analyzer import DeepSeekSentimentAnalyzer
+            return DeepSeekSentimentAnalyzer(**kwargs)
+
         else:
             raise ValueError(f"不支持的模型类型: {analyzer_type}")
 
     @staticmethod
     def get_supported_analyzers() -> List[str]:
         """获取支持的分析器类型列表"""
-        return ["snownlp", "paddle", "bert", "hybrid"]
+        return ["hybrid", "deepseek", "snownlp", "paddle", "bert"]
 
     @staticmethod
     def get_analyzer_info(analyzer_type: str) -> Dict[str, Any]:

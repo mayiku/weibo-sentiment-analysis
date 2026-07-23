@@ -7,12 +7,13 @@ Keeping them inside the package avoids the ambiguous ``src/sentiment.py`` vs
 
 from collections import Counter
 from functools import lru_cache
+import importlib.util
 import re
 from typing import Optional
 
 import pandas as pd
 
-from config import DEFAULT_SENTIMENT_MODEL, STOPWORDS
+from config import DEFAULT_SENTIMENT_MODEL, DEEPSEEK_API_KEY, STOPWORDS
 from src.logger import get_logger
 
 from .base import AnalyzerFactory
@@ -233,8 +234,16 @@ def get_available_models() -> list:
 
 
 def get_configured_models() -> list:
-    """Return configured model choices without importing or running them."""
-    return AnalyzerFactory.get_supported_analyzers()
+    """Return models whose required runtime is configured, without inference."""
+    models = ["hybrid"]
+    if DEEPSEEK_API_KEY:
+        models.append("deepseek")
+    models.append("snownlp")
+    if importlib.util.find_spec("paddle") and importlib.util.find_spec("paddlenlp"):
+        models.append("paddle")
+    if importlib.util.find_spec("torch") and importlib.util.find_spec("transformers"):
+        models.append("bert")
+    return models
 
 
 def get_model_health_report() -> dict:

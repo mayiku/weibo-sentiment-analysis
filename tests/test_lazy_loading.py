@@ -11,10 +11,12 @@ class LazyLoadingTests(unittest.TestCase):
         self.assertNotIn("transformers", sys.modules)
 
     def test_configured_models_do_not_require_health_check(self):
-        self.assertEqual(
-            sentiment.get_configured_models(),
-            ["snownlp", "paddle", "bert", "hybrid"],
-        )
+        models = sentiment.get_configured_models()
+        self.assertEqual(models[0], "hybrid")
+        self.assertIn("snownlp", models)
+        self.assertTrue(set(models).issubset({
+            "hybrid", "deepseek", "snownlp", "paddle", "bert"
+        }))
 
 
 if __name__ == "__main__":

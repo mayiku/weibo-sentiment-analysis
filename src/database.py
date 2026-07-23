@@ -55,6 +55,8 @@ def init_db():
                 model_version   TEXT,
                 fallback_used   INTEGER DEFAULT 0,
                 fallback_reason TEXT,
+                processing_time REAL,
+                model_memory    REAL,
                 quality_status  TEXT DEFAULT 'unknown',
                 quality_issues_json TEXT,
                 sampling_json   TEXT,
@@ -223,6 +225,8 @@ def _migrate_schema(conn: sqlite3.Connection):
         ('model_version', 'TEXT'),
         ('fallback_used', 'INTEGER DEFAULT 0'),
         ('fallback_reason', 'TEXT'),
+        ('processing_time', 'REAL'),
+        ('model_memory', 'REAL'),
         ('quality_status', "TEXT DEFAULT 'unknown'"),
         ('quality_issues_json', 'TEXT'),
         ('sampling_json', 'TEXT'),
@@ -476,7 +480,8 @@ def update_task_results(task_id: int, total: int, pos: int, neg: int, neu: int,
                         model_version: str = None, fallback_used: bool = False,
                         fallback_reason: str = None, quality_status: str = "unknown",
                         quality_issues_json: str = None, unique_comments: int = None,
-                        sampling_json: str = None, representation_status: str = "unknown"):
+                        sampling_json: str = None, representation_status: str = "unknown",
+                        processing_time: float = None, model_memory: float = None):
     """更新任务的统计结果"""
     conn = get_connection()
     try:
@@ -485,11 +490,13 @@ def update_task_results(task_id: int, total: int, pos: int, neg: int, neu: int,
                wordcloud_path=?, keywords_json=?, structured_json=?, raw_comments=?,
                expected_comments=?, fetched_comments=?, coverage_pct=?, requested_model=?,
                effective_model=?, model_version=?, fallback_used=?, fallback_reason=?,
-               quality_status=?, quality_issues_json=?, sampling_json=?, representation_status=? WHERE id=?""",
+               processing_time=?, model_memory=?, quality_status=?, quality_issues_json=?,
+               sampling_json=?, representation_status=? WHERE id=?""",
             (total, unique_comments if unique_comments is not None else total, total_posts, pos, neg, neu, wordcloud_path, keywords_json, structured_json,
              raw_comments, expected_comments, fetched_comments, coverage_pct, requested_model,
              effective_model, model_version, int(bool(fallback_used)), fallback_reason,
-             quality_status, quality_issues_json, sampling_json, representation_status, task_id)
+             processing_time, model_memory, quality_status, quality_issues_json,
+             sampling_json, representation_status, task_id)
         )
         conn.commit()
         log.info("任务 #%d 统计已更新: 帖子%d, 评论%d, 积极%d, 消极%d, 中性%d",
