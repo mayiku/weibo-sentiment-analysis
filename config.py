@@ -49,7 +49,7 @@ SENTIMENT_NEG_THRESHOLD = 0.4
 # 爬虫配置 - 用户体验优化
 CRAWLER_PAGE_NUM = 3
 CRAWLER_SCROLL_TIMES = 10
-CRAWLER_HEADLESS = _env_bool("CRAWLER_HEADLESS", False)
+CRAWLER_HEADLESS = _env_bool("CRAWLER_HEADLESS", not bool(os.getenv("DISPLAY")))
 CRAWLER_AUTO_LOGIN_TIMEOUT = 180   # 登录超时延长至180秒，方便用户扫码
 CRAWLER_MOCK_FALLBACK = False      # 真实爬取失败时明确报错，避免把模拟数据当成真实结果
 CRAWLER_REQUEST_DELAY_MIN = 3.0    # 请求间隔最小值（防反爬）
@@ -57,6 +57,10 @@ CRAWLER_REQUEST_DELAY_MAX = 7.0    # 请求间隔最大值
 CRAWLER_PAGE_LOAD_TIMEOUT = 60     # 页面加载超时
 CRAWLER_ELEMENT_WAIT_TIMEOUT = 15  # 元素等待超时
 CRAWLER_MAX_RETRIES = 3            # 重试次数，增加用户体验稳定性
+
+# 云端登录凭据。建议仅在 Streamlit Secrets 中配置，严禁提交到 GitHub。
+# 支持浏览器 Cookie Header 格式："SUB=...; SUBP=...; XSRF-TOKEN=..."
+WEIBO_COOKIE = os.getenv("WEIBO_COOKIE", "").strip()
 
 # API 爬虫配置（requests 方式）
 CRAWLER_API_ENABLED = True          # 是否启用 API 方式（优先）

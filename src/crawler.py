@@ -53,6 +53,7 @@ from config import (
     DEBUG_DIR,
     COOKIE_DIR,
     COOKIE_FILE,
+    WEIBO_COOKIE,
 )
 from src.logger import get_logger
 from src.webdriver_manager import find_chrome_binary, find_chromedriver
@@ -342,6 +343,49 @@ class CookieManager:
     def __init__(self, cookie_file: Path = COOKIE_FILE):
         self.cookie_file = cookie_file
 
+    @staticmethod
+    def parse_cookie_header(cookie_header: str) -> list[dict]:
+        """Convert a browser Cookie header into Selenium cookie dictionaries."""
+        cookies = []
+        for item in (cookie_header or "").split(';'):
+            item = item.strip()
+            if not item or '=' not in item:
+                continue
+            name, value = item.split('=', 1)
+            name = name.strip()
+            if not name:
+                continue
+            cookies.append({
+                'name': name,
+                'value': value.strip(),
+                'domain': '.weibo.com',
+                'path': '/',
+            })
+        return cookies
+
+    def _load_cookie_list(self, driver: webdriver.Chrome,
+                          cookies: list[dict], source: str) -> bool:
+        if not cookies:
+            return False
+        driver.get('https://weibo.com')
+        time.sleep(2)
+        loaded = 0
+        for original in cookies:
+            try:
+                cookie = dict(original)
+                cookie.pop('sameSite', None)
+                cookie.pop('httpOnly', None)
+                cookie.setdefault('domain', '.weibo.com')
+                cookie.setdefault('path', '/')
+                driver.add_cookie(cookie)
+                loaded += 1
+            except Exception as exc:
+                log.debug("忽略无法加载的 Cookie 项: %s", type(exc).__name__)
+        if loaded:
+            driver.refresh()
+        log.info("Cookie 已从%s加载: %d/%d 条", source, loaded, len(cookies))
+        return loaded > 0
+
     def save(self, driver: webdriver.Chrome) -> bool:
         try:
             cookies = driver.get_cookies()
@@ -358,6 +402,12 @@ class CookieManager:
             return False
 
     def load(self, driver: webdriver.Chrome) -> bool:
+        if WEIBO_COOKIE:
+            cookies = self.parse_cookie_header(WEIBO_COOKIE)
+            if self._load_cookie_list(driver, cookies, "Streamlit Secrets"):
+                return True
+            log.warning("Streamlit Secrets 中的 WEIBO_COOKIE 无法加载")
+
         if not self.cookie_file.exists():
             log.info("Cookie 文件不存在: %s", self.cookie_file)
             return False
@@ -367,20 +417,7 @@ class CookieManager:
             if not cookies:
                 log.warning("Cookie 文件为空")
                 return False
-            driver.get('https://weibo.com')
-            time.sleep(2)
-            loaded = 0
-            for cookie in cookies:
-                try:
-                    cookie.pop('sameSite', None)
-                    cookie.pop('httpOnly', None)
-                    driver.add_cookie(cookie)
-                    loaded += 1
-                except Exception:
-                    pass
-            driver.refresh()
-            log.info("Cookie 已加载: %d/%d 条", loaded, len(cookies))
-            return loaded > 0
+            return self._load_cookie_list(driver, cookies, "本地缓存")
         except Exception as e:
             log.error("加载 Cookie 失败: %s", e)
             return False

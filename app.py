@@ -560,7 +560,7 @@ with st.sidebar:
             placeholder="例如: 陈奕迅, 福州车祸...",
             help="输入要分析的微博话题（不需要加 # 号）",
         )
-        st.caption("首次采集需要在浏览器中完成微博登录。")
+        st.caption("云端采集需要在 Streamlit Secrets 中配置微博 Cookie。")
         if topic_keyword.strip():
             try:
                 from src.incremental import get_series
