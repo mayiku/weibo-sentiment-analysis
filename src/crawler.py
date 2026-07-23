@@ -55,6 +55,7 @@ from config import (
     COOKIE_FILE,
 )
 from src.logger import get_logger
+from src.webdriver_manager import find_chrome_binary, find_chromedriver
 
 log = get_logger(__name__)
 
@@ -406,6 +407,10 @@ def _create_driver(headless: bool = None) -> webdriver.Chrome:
         headless = CRAWLER_HEADLESS
 
     options = Options()
+    chrome_binary = find_chrome_binary()
+    if chrome_binary:
+        options.binary_location = chrome_binary
+        log.info("检测到 Chrome/Chromium: %s", chrome_binary)
     options.page_load_strategy = 'eager'  # ★ DOM 就绪即返回，不等图片/视频加载
     if headless:
         options.add_argument('--headless=new')
@@ -420,7 +425,24 @@ def _create_driver(headless: bool = None) -> webdriver.Chrome:
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    # 策略1: webdriver-manager (recommended)
+    errors = []
+
+    # 策略1: 云端/Linux 优先使用系统配套的 Chromium + chromedriver
+    system_driver = find_chromedriver()
+    if system_driver:
+        try:
+            log.info(">>> 使用系统 ChromeDriver: %s", system_driver)
+            driver = webdriver.Chrome(
+                service=Service(system_driver), options=options
+            )
+            log.info("[OK] ChromeDriver 启动成功 (系统路径)")
+            _apply_stealth(driver)
+            return driver
+        except Exception as exc:
+            errors.append(f"系统驱动: {exc}")
+            log.warning("系统 ChromeDriver 失败: %s", exc)
+
+    # 策略2: webdriver-manager（本地环境自动下载）
     try:
         from webdriver_manager.chrome import ChromeDriverManager
         from selenium.webdriver.chrome.service import Service as ChromeService
@@ -434,25 +456,30 @@ def _create_driver(headless: bool = None) -> webdriver.Chrome:
         _apply_stealth(driver)
         return driver
     except Exception as e:
+        errors.append(f"webdriver-manager: {e}")
         log.warning("webdriver-manager 失败: %s", e)
 
-    # 策略2: 手动 chromedriver
-    try:
-        log.info(">>> 回退到手动 ChromeDriver: %s", CHROMEDRIVER_PATH)
-        service = Service(str(CHROMEDRIVER_PATH))
-        driver = webdriver.Chrome(service=service, options=options)
-        log.info("[OK] ChromeDriver 启动成功 (手动路径)")
-        _apply_stealth(driver)
-        return driver
-    except Exception as e2:
-        log.error("手动 ChromeDriver 也失败: %s", e2)
+    # 策略3: 兼容旧版 Windows 项目内驱动
+    if CHROMEDRIVER_PATH.exists() and str(CHROMEDRIVER_PATH) != system_driver:
+        try:
+            log.info(">>> 回退到项目内 ChromeDriver: %s", CHROMEDRIVER_PATH)
+            service = Service(str(CHROMEDRIVER_PATH))
+            driver = webdriver.Chrome(service=service, options=options)
+            log.info("[OK] ChromeDriver 启动成功 (项目内路径)")
+            _apply_stealth(driver)
+            return driver
+        except Exception as exc:
+            errors.append(f"项目内驱动: {exc}")
+            log.error("项目内 ChromeDriver 失败: %s", exc)
 
     # Both failed
     raise RuntimeError(
-        "无法启动 ChromeDriver。\n"
-        "  1) 推荐: pip install webdriver-manager\n"
-        "  2) 或确保 chromedriver.exe 放在 %s\n"
-        "  3) 确保 Chrome 浏览器已安装且版本匹配" % CHROMEDRIVER_PATH
+        "无法启动 Chromium/ChromeDriver。"
+        f" 浏览器={chrome_binary or '未检测到'}；"
+        f"驱动={system_driver or '未检测到'}。"
+        " 云端请在 packages.txt 安装 chromium 与 chromium-driver；"
+        "本地可安装 Chrome，或运行 pip install webdriver-manager。"
+        f" 诊断: {' | '.join(errors)[:600]}"
     )
 
 
@@ -1527,10 +1554,10 @@ def verify_crawler_env() -> dict:
     except ImportError:
         pass
 
-    if CHROMEDRIVER_PATH.exists():
+    if find_chromedriver():
         result['manual_chromedriver_ok'] = True
 
-    if result['webdriver_manager_ok'] or result['manual_chromedriver_ok']:
+    if find_chrome_binary() and (result['webdriver_manager_ok'] or result['manual_chromedriver_ok']):
         try:
             driver = _create_driver(headless=True)
             driver.get('https://www.baidu.com')

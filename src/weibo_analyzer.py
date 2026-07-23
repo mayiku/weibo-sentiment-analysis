@@ -29,6 +29,7 @@ from config import (
     CRAWLER_PAGE_LOAD_TIMEOUT,
 )
 from src.logger import get_logger
+from src.webdriver_manager import find_chrome_binary, find_chromedriver
 
 log = get_logger(__name__)
 
@@ -85,6 +86,9 @@ class WeiboNetworkAnalyzer:
             headless = CRAWLER_HEADLESS
 
         options = Options()
+        chrome_binary = find_chrome_binary()
+        if chrome_binary:
+            options.binary_location = chrome_binary
         if headless:
             options.add_argument('--headless=new')
 
@@ -102,14 +106,17 @@ class WeiboNetworkAnalyzer:
         # ★ 关键: 启用 Performance Logging
         options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
-        # 使用 webdriver-manager
+        # 云端优先使用系统配套驱动
+        system_driver = find_chromedriver()
         try:
+            if not system_driver:
+                raise FileNotFoundError("系统中未找到 chromedriver")
+            service = Service(system_driver)
+            self.driver = webdriver.Chrome(service=service, options=options)
+        except Exception:
             from webdriver_manager.chrome import ChromeDriverManager
             from selenium.webdriver.chrome.service import Service as ChromeService
             service = ChromeService(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
-        except Exception:
-            service = Service(str(CHROMEDRIVER_PATH))
             self.driver = webdriver.Chrome(service=service, options=options)
 
         self.driver.set_page_load_timeout(CRAWLER_PAGE_LOAD_TIMEOUT)

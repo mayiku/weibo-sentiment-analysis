@@ -1363,7 +1363,8 @@ else:
             font_ok = has_chinese_font()
             st.metric("中文字体", "可用" if font_ok else "未找到")
         with status_cols[1]:
-            driver_ok = Path("chromedriver-win64/chromedriver.exe").exists()
+            from src.webdriver_manager import find_chrome_binary, find_chromedriver
+            driver_ok = bool(find_chrome_binary() and find_chromedriver())
             st.metric("ChromeDriver", "就绪" if driver_ok else "缺失")
         with status_cols[2]:
             from config import DATABASE_PATH

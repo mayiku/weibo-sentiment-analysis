@@ -3,6 +3,8 @@
 """
 import time
 import sys
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +17,46 @@ from config import CHROMEDRIVER_PATH, CRAWLER_HEADLESS
 from src.logger import get_logger
 
 log = get_logger(__name__)
+
+
+def find_chrome_binary() -> Optional[str]:
+    """Locate Chrome/Chromium across Streamlit Cloud, Linux, macOS and Windows."""
+    configured = os.getenv("CHROME_BINARY", "").strip()
+    candidates = [
+        configured,
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate))
+    return None
+
+
+def find_chromedriver() -> Optional[str]:
+    """Locate a system driver first, then the legacy bundled Windows driver."""
+    configured = os.getenv("CHROMEDRIVER_PATH", "").strip()
+    candidates = [
+        configured,
+        shutil.which("chromedriver"),
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        (
+            str(CHROMEDRIVER_PATH)
+            if os.name == "nt" and CHROMEDRIVER_PATH.exists()
+            else ""
+        ),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate))
+    return None
 
 
 def create_user_friendly_driver(headless: bool = None, max_retries: int = 3) -> webdriver.Chrome:
@@ -48,9 +90,9 @@ def _try_create_driver_attempts(headless: bool, attempt: int) -> Optional[webdri
     尝试不同的策略创建WebDriver
     """
     strategies = [
+        ("系统 Chromium", _create_with_system_path),
         ("webdriver-manager", _create_with_webdriver_manager),
         ("手动路径", _create_with_manual_path),
-        ("系统路径", _create_with_system_path),
     ]
 
     for strategy_name, strategy_func in strategies:
@@ -110,9 +152,12 @@ def _create_with_manual_path(headless: bool) -> webdriver.Chrome:
 def _create_with_system_path(headless: bool) -> webdriver.Chrome:
     """使用系统PATH中的WebDriver"""
     options = _create_chrome_options(headless)
+    driver_path = find_chromedriver()
+    if not driver_path:
+        raise FileNotFoundError("系统中未找到 chromedriver")
 
     try:
-        return webdriver.Chrome(options=options)
+        return webdriver.Chrome(service=Service(driver_path), options=options)
     except WebDriverException as e:
         if "chromedriver" in str(e).lower() and "path" in str(e).lower():
             log.info("系统PATH中未找到ChromeDriver")
@@ -123,6 +168,10 @@ def _create_with_system_path(headless: bool) -> webdriver.Chrome:
 def _create_chrome_options(headless: bool) -> Options:
     """创建Chrome选项配置"""
     options = Options()
+    chrome_binary = find_chrome_binary()
+    if chrome_binary:
+        options.binary_location = chrome_binary
+        log.info("检测到 Chrome/Chromium: %s", chrome_binary)
 
     # 基础配置
     options.page_load_strategy = 'eager'
@@ -216,14 +265,13 @@ def verify_webdriver_environment() -> dict:
         'diagnosis': [],
     }
 
-    # 检查Chrome安装
-    try:
-        import subprocess
-        subprocess.run(['chrome', '--version'], capture_output=True)
+    # 检查 Chrome/Chromium 安装
+    chrome_binary = find_chrome_binary()
+    if chrome_binary:
         result['chrome_installed'] = True
-        result['diagnosis'].append("[OK] Chrome浏览器已安装")
-    except:
-        result['diagnosis'].append("[FAILED] Chrome浏览器未安装或不在PATH中")
+        result['diagnosis'].append(f"[OK] 浏览器已安装: {chrome_binary}")
+    else:
+        result['diagnosis'].append("[FAILED] 未检测到 Chrome/Chromium")
 
     # 检查手动路径
     if CHROMEDRIVER_PATH.exists():
