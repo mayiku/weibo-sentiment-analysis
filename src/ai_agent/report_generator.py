@@ -174,16 +174,25 @@ class ReportGenerator:
             except Exception as exc:
                 log.error("【报告校验】修订调用失败: %s", exc)
                 repaired = None
-            if repaired and not self._validate_report(
-                repaired, sampling, expected_report_date
-            ):
+            repaired_issues = (
+                self._validate_report(repaired, sampling, expected_report_date)
+                if repaired else ['empty_repair']
+            )
+            if repaired and not repaired_issues:
                 report = repaired
                 guardrail_repaired = True
             else:
+                log.warning(
+                    "【报告校验】修订后仍未通过: %s",
+                    ", ".join(repaired_issues),
+                )
                 return {
                     'success': False,
                     'report': '', 'report_path': '', 'from_cache': False,
-                    'usage_info': {'guardrail_issues': guardrail_issues},
+                    'usage_info': {
+                        'guardrail_issues': guardrail_issues,
+                        'repaired_issues': repaired_issues,
+                    },
                     'error': 'AI 报告未通过证据边界校验，已阻止展示。请重试。',
                 }
 
@@ -242,7 +251,8 @@ class ReportGenerator:
 
     _TEMPORAL_PATTERNS = (
         r"正在从.{0,30}(?:转向|转移)",
-        r"(?:仍将|将逐渐|将持续|将进一步)",
+        r"(?:仍将|将逐渐|将持续|将进一步)[^。！？\n]{0,16}"
+        r"(?:上升|下降|升温|降温|扩散|转向|转移|扩大|收窄|加剧|缓解)",
         r"(?:正在|持续)(?:上升|下降|升温|降温|扩散)",
     )
     _CONDITIONAL_MARKERS = (
@@ -258,7 +268,12 @@ class ReportGenerator:
                 sentence_start = max(
                     report.rfind(mark, 0, match.start()) for mark in "。！？\n"
                 ) + 1
-                context = report[sentence_start:match.start()]
+                sentence_ends = [
+                    end for mark in "。！？\n"
+                    if (end := report.find(mark, match.end())) >= 0
+                ]
+                sentence_end = min(sentence_ends) if sentence_ends else len(report)
+                context = report[sentence_start:sentence_end]
                 if not any(
                     re.search(marker, context) for marker in self._CONDITIONAL_MARKERS
                 ):
@@ -328,7 +343,7 @@ class ReportGenerator:
                    keywords: list, sampling: dict = None) -> str:
         """生成缓存键（基于输入数据的哈希）"""
         raw = json.dumps({
-            'report_format': 6,
+            'report_format': 7,
             'topic': topic,
             'stats': {k: v for k, v in stats.items() if k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
             'posts_count': len(posts),
