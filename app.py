@@ -14,7 +14,7 @@ import streamlit as st
 # 确保项目根目录在 import 路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import OUTPUT_DIR, DATA_DIR, TOP_KEYWORDS_N, REPORT_DIR
+from config import OUTPUT_DIR, DATA_DIR, TOP_KEYWORDS_N, REPORT_DIR, WEIBO_COOKIE
 from src.logger import get_logger, get_log_file
 from src.database import (
     init_db, create_task, update_task_status, update_task_results,
@@ -560,7 +560,10 @@ with st.sidebar:
             placeholder="例如: 陈奕迅, 福州车祸...",
             help="输入要分析的微博话题（不需要加 # 号）",
         )
-        st.caption("云端采集需要在 Streamlit Secrets 中配置微博 Cookie。")
+        if WEIBO_COOKIE:
+            st.caption("微博 Cookie 已配置 · 云端将自动恢复登录状态。")
+        else:
+            st.caption("云端采集需要在 Streamlit Secrets 中配置微博 Cookie。")
         if topic_keyword.strip():
             try:
                 from src.incremental import get_series
