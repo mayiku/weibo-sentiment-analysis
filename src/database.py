@@ -16,6 +16,43 @@ from src.quality import assess_result_quality, load_crawl_metadata
 
 log = get_logger(__name__)
 
+DATABASE_SCHEMA_VERSION = 4
+TASK_COLUMN_MIGRATIONS = [
+    ('total_posts', 'INTEGER DEFAULT 0'),
+    ('structured_json', 'TEXT'),
+    ('raw_comments', 'INTEGER DEFAULT 0'),
+    ('unique_comments', 'INTEGER DEFAULT 0'),
+    ('expected_comments', 'INTEGER'),
+    ('fetched_comments', 'INTEGER'),
+    ('coverage_pct', 'REAL'),
+    ('requested_model', 'TEXT'),
+    ('effective_model', 'TEXT'),
+    ('model_version', 'TEXT'),
+    ('fallback_used', 'INTEGER DEFAULT 0'),
+    ('fallback_reason', 'TEXT'),
+    ('processing_time', 'REAL'),
+    ('model_memory', 'REAL'),
+    ('quality_status', "TEXT DEFAULT 'unknown'"),
+    ('quality_issues_json', 'TEXT'),
+    ('sampling_json', 'TEXT'),
+    ('representation_status', "TEXT DEFAULT 'unknown'"),
+    ('report_path', 'TEXT'),
+    ('report_provider', 'TEXT'),
+]
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str,
+                    definitions: list[tuple[str, str]]) -> None:
+    """Idempotently add missing columns, including after Streamlit hot reloads."""
+    existing = {
+        row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for column, column_type in definitions:
+        if column not in existing:
+            log.info("Schema migration: adding %s to %s...", column, table)
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+            existing.add(column)
+
 
 def get_connection() -> sqlite3.Connection:
     """获取数据库连接"""
@@ -209,35 +246,8 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE comments ADD COLUMN post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id)")
 
-    # Check if tasks has new columns
-    cur = conn.execute("PRAGMA table_info(tasks)")
-    task_cols = [row[1] for row in cur.fetchall()]
-    task_columns = [
-        ('total_posts', 'INTEGER DEFAULT 0'),
-        ('structured_json', 'TEXT'),
-        ('raw_comments', 'INTEGER DEFAULT 0'),
-        ('unique_comments', 'INTEGER DEFAULT 0'),
-        ('expected_comments', 'INTEGER'),
-        ('fetched_comments', 'INTEGER'),
-        ('coverage_pct', 'REAL'),
-        ('requested_model', 'TEXT'),
-        ('effective_model', 'TEXT'),
-        ('model_version', 'TEXT'),
-        ('fallback_used', 'INTEGER DEFAULT 0'),
-        ('fallback_reason', 'TEXT'),
-        ('processing_time', 'REAL'),
-        ('model_memory', 'REAL'),
-        ('quality_status', "TEXT DEFAULT 'unknown'"),
-        ('quality_issues_json', 'TEXT'),
-        ('sampling_json', 'TEXT'),
-        ('representation_status', "TEXT DEFAULT 'unknown'"),
-        ('report_path', 'TEXT'),
-        ('report_provider', 'TEXT'),
-    ]
-    for col, col_type in task_columns:
-        if col not in task_cols:
-            log.info("Schema migration: adding %s to tasks...", col)
-            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {col_type}")
+    # Ensure tasks has all versioned columns.
+    _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
 
     cur = conn.execute("PRAGMA table_info(comments)")
     comment_cols = [row[1] for row in cur.fetchall()]
@@ -485,6 +495,9 @@ def update_task_results(task_id: int, total: int, pos: int, neg: int, neu: int,
     """更新任务的统计结果"""
     conn = get_connection()
     try:
+        # cache_resource may survive a source hot reload. Ensure the write schema
+        # at the point of use so a stale initialization cache cannot break tasks.
+        _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
         conn.execute(
             """UPDATE tasks SET total_comments=?, unique_comments=?, total_posts=?, pos_count=?, neg_count=?, neu_count=?,
                wordcloud_path=?, keywords_json=?, structured_json=?, raw_comments=?,

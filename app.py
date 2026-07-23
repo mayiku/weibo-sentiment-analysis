@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import OUTPUT_DIR, DATA_DIR, TOP_KEYWORDS_N, REPORT_DIR, WEIBO_COOKIE
 from src.logger import get_logger, get_log_file
 from src.database import (
+    DATABASE_SCHEMA_VERSION,
     init_db, create_task, update_task_status, update_task_results,
     insert_comments, insert_keywords, insert_posts,
     get_task, get_all_tasks, get_task_comments, get_task_posts,
@@ -321,12 +322,13 @@ st.markdown("""
 
 # ── 初始化数据库 ───────────────────────────────────────
 @st.cache_resource
-def _initialize_database_once():
+def _initialize_database_once(schema_version: int):
+    # schema_version deliberately participates in the cache key.
     init_db()
     return True
 
 
-_initialize_database_once()
+_initialize_database_once(DATABASE_SCHEMA_VERSION)
 
 
 # ── 辅助函数 ───────────────────────────────────────────
