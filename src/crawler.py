@@ -45,6 +45,8 @@ from config import (
     CRAWLER_REQUEST_DELAY_MAX,
     CRAWLER_PAGE_LOAD_TIMEOUT,
     CRAWLER_ELEMENT_WAIT_TIMEOUT,
+    CRAWLER_SELENIUM_SCROLL_DELAY_MIN,
+    CRAWLER_SELENIUM_SCROLL_DELAY_MAX,
     CRAWLER_API_ENABLED,
     CRAWLER_API_MAX_PAGES,
     CRAWLER_API_DELAY_MIN,
@@ -1260,13 +1262,24 @@ def get_weibo_comments(driver: webdriver.Chrome, post_info: dict,
         log.error("  [FAIL] 页面加载异常: %s", str(e)[:150])
         return []
 
-    _random_delay(3, 5)
+    _random_delay(2, 3)
 
-    area_check = check_comment_area(driver)
+    # 多个备用选择器会顺序尝试；单项超时必须保持很短，否则一次
+    # Selenium 回退仅“检查评论区”就可能耗费几十秒。
+    comments = _safe_find_elements(driver, COMMENT_LIST_SELECTORS, timeout=1)
+    area_check = {
+        'is_loaded': bool(comments),
+        'comment_count': len(comments),
+        'details': f"[OK] 评论区已加载: {len(comments)} 个元素" if comments
+        else "[FAIL] 未检测到评论区",
+    }
+    log.info("【评论区】 %s", area_check['details'])
     if not area_check['is_loaded']:
         log.warning("  评论区首次未检测到，等待更久...")
-        _random_delay(5, 8)
-        area_check = check_comment_area(driver)
+        _random_delay(2, 3)
+        comments = _safe_find_elements(driver, COMMENT_LIST_SELECTORS, timeout=1)
+        area_check['is_loaded'] = bool(comments)
+        area_check['comment_count'] = len(comments)
         if not area_check['is_loaded']:
             log.error("  [FAIL] 评论区未加载 (mid=%s)", mid)
             _save_debug_info(driver, f"no_comment_area_{mid}")
@@ -1278,11 +1291,16 @@ def get_weibo_comments(driver: webdriver.Chrome, post_info: dict,
     all_comments_raw = []
     last_height = driver.execute_script("return document.body.scrollHeight")
     no_change_count = 0
+    no_new_comment_rounds = 0
+    previous_comment_count = 0
 
     for scroll_idx in range(scroll_times):
         log.debug("  滚动 %d/%d (当前 %d 条)", scroll_idx + 1, scroll_times, len(all_comments_raw))
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(random.randint(8, 15))
+        time.sleep(random.uniform(
+            CRAWLER_SELENIUM_SCROLL_DELAY_MIN,
+            CRAWLER_SELENIUM_SCROLL_DELAY_MAX,
+        ))
         try:
             for el in _safe_find_elements(driver, COMMENT_LIST_SELECTORS, timeout=3):
                 try:
@@ -1295,6 +1313,18 @@ def get_weibo_comments(driver: webdriver.Chrome, post_info: dict,
             log.warning("  提取评论异常 (scroll %d): %s", scroll_idx + 1, e)
 
         new_height = driver.execute_script("return document.body.scrollHeight")
+        if len(all_comments_raw) == previous_comment_count:
+            no_new_comment_rounds += 1
+        else:
+            no_new_comment_rounds = 0
+        previous_comment_count = len(all_comments_raw)
+
+        if card_cc > 0 and len(all_comments_raw) >= card_cc:
+            log.debug("  已达到卡片标称评论数，停止滚动")
+            break
+        if no_new_comment_rounds >= 2:
+            log.debug("  连续两轮无新增评论，停止滚动")
+            break
         if new_height == last_height:
             no_change_count += 1
             if no_change_count >= 2:
@@ -1775,8 +1805,14 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
                         elif report.get('incomplete'):
                             log.info("    平台可见窗口结束，未达到标称评论数")
                     else:
-                        api_consecutive_fails += 1
-                        log.warning("  [API] 返回空 (连续失败 %d/3)", api_consecutive_fails)
+                        # 空的可见窗口是单帖数据状态，不代表 API 服务故障。
+                        # 仅真正的请求错误才应触发全局熔断。
+                        if report.get('request_succeeded'):
+                            api_consecutive_fails = 0
+                            log.info("  [API] 可见窗口为空，当前帖子回退 Selenium")
+                        else:
+                            api_consecutive_fails += 1
+                            log.warning("  [API] 请求失败 (连续失败 %d/3)", api_consecutive_fails)
                 except Exception as e:
                     api_consecutive_fails += 1
                     log.warning("  [API FAIL] %s (连续失败 %d/3)", str(e)[:80], api_consecutive_fails)

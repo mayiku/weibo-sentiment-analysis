@@ -57,6 +57,8 @@ CRAWLER_REQUEST_DELAY_MAX = 7.0    # 请求间隔最大值
 CRAWLER_PAGE_LOAD_TIMEOUT = 60     # 页面加载超时
 CRAWLER_ELEMENT_WAIT_TIMEOUT = 15  # 元素等待超时
 CRAWLER_MAX_RETRIES = 3            # 重试次数，增加用户体验稳定性
+CRAWLER_SELENIUM_SCROLL_DELAY_MIN = 2.0
+CRAWLER_SELENIUM_SCROLL_DELAY_MAX = 4.0
 
 # 云端登录凭据。建议仅在 Streamlit Secrets 中配置，严禁提交到 GitHub。
 # 支持浏览器 Cookie Header 格式："SUB=...; SUBP=...; XSRF-TOKEN=..."

@@ -61,6 +61,28 @@ class WeiboApiReportingTests(unittest.TestCase):
         self.assertEqual(report["stop_reason"], "checkpoint_reached")
         self.assertEqual(report["known_records_seen"], 2)
 
+    def test_single_known_terminal_page_is_an_incremental_checkpoint(self):
+        client = WeiboAPIClient()
+        client._detect_max_count = lambda _mid: 20
+        client._adaptive_wait = lambda **_kwargs: None
+        client._extract_all_records = lambda comment: [{
+            "comment_id": str(comment["id"]), "text": "旧评论",
+            "parent_id": "", "depth": 0,
+        }]
+        client.get_comments_page = lambda *_args, **_kwargs: {
+            "ok": 1, "data": [{"id": "1"}],
+            "max_id": 0, "total_number": 1,
+        }
+
+        comments, report = client.get_all_comments(
+            "mid", known_comment_ids={"1"}, stop_after_known_pages=2,
+        )
+
+        self.assertEqual(comments, [])
+        self.assertTrue(report["checkpoint_reached"])
+        self.assertTrue(report["request_succeeded"])
+        self.assertFalse(report["incomplete"])
+
 
 if __name__ == "__main__":
     unittest.main()

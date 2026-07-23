@@ -739,9 +739,16 @@ class WeiboAPIClient:
         actual = len(all_comments)
         coverage = actual / expected_total * 100.0 if expected_total > 0 else 0.0
         truncated_by_pages = stop_reason == 'max_pages'
+        incremental_checkpoint = bool(
+            known_comment_ids and known_records_seen > 0 and actual == 0
+            and stop_reason in {
+                'empty_page', 'max_id_zero', 'cursor_stalled',
+                'no_new_comments', 'checkpoint_reached',
+            }
+        )
         incomplete = bool(
             expected_total > 0 and actual < expected_total
-            and stop_reason != 'checkpoint_reached'
+            and not incremental_checkpoint
         )
         visible_window_limited = bool(
             incomplete and stop_reason in {
@@ -772,7 +779,8 @@ class WeiboAPIClient:
             'last_cursor': max_id,
             'comment_records': comment_records,
             'known_records_seen': known_records_seen,
-            'checkpoint_reached': stop_reason == 'checkpoint_reached',
+            'checkpoint_reached': incremental_checkpoint,
+            'request_succeeded': bool(page > 0 and errors_used == 0),
             'incremental_scan': bool(known_comment_ids),
             'new_fetched': actual,
         }
