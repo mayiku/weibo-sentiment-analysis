@@ -92,6 +92,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+if not st.session_state.get('_weibo_cookie_config_logged'):
+    log.info("微博 Cookie 配置状态: %s", "已配置" if WEIBO_COOKIE else "未配置")
+    st.session_state['_weibo_cookie_config_logged'] = True
+
 # ── 自定义 CSS ─────────────────────────────────────────
 st.markdown("""
 <style>
