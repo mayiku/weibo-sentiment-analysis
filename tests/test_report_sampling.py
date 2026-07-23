@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from src.ai_agent.prompts import build_analysis_prompt
 from src.ai_agent.report_generator import ReportGenerator
@@ -68,6 +69,53 @@ class ReportSamplingTests(unittest.TestCase):
             "**报告日期**: 2026-07-23", {}, "2026-07-22"
         )
         self.assertIn("incorrect_report_date", issues)
+
+    def test_single_snapshot_report_gets_visible_non_blocking_notice(self):
+        generator = ReportGenerator.__new__(ReportGenerator)
+        report = generator._add_sampling_notice(
+            "## 趋势展望\n讨论热度正在上升。", {}
+        )
+        self.assertIn("趋势判断基于单次采样，仅供参考", report)
+        self.assertIn("讨论热度正在上升", report)
+
+    def test_temporal_evidence_does_not_add_single_snapshot_notice(self):
+        generator = ReportGenerator.__new__(ReportGenerator)
+        report = generator._add_sampling_notice(
+            "## 趋势展望\n讨论热度正在上升。",
+            {"temporal_evidence": True},
+        )
+        self.assertNotIn("趋势判断基于单次采样", report)
+
+    def test_temporal_claim_is_displayed_without_repair_call(self):
+        class FakeClient:
+            api_key = 'test-key'
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, **kwargs):
+                self.calls += 1
+                return "## 趋势展望\n讨论热度持续上升。"
+
+        generator = ReportGenerator.__new__(ReportGenerator)
+        generator.provider = 'deepseek'
+        generator.client = FakeClient()
+        generator._save_cache = lambda *args: Path('/tmp/report.md')
+
+        result = generator.generate(
+            topic='测试',
+            stats={'total': 10, 'positive': 5, 'neutral': 3, 'negative': 2},
+            df=None,
+            posts=[],
+            keywords=[],
+            use_cache=False,
+            sampling={},
+        )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(generator.client.calls, 1)
+        self.assertIn('趋势判断基于单次采样，仅供参考', result['report'])
+        self.assertIn('unsupported_temporal_claim', result['usage_info']['guardrail_warnings'])
 
 
 if __name__ == "__main__":

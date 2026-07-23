@@ -46,6 +46,9 @@ class ReportGenerator:
       - 支持多 AI Provider (SiliconFlow/DeepSeek)
     """
 
+    _SOFT_GUARDRAIL_ISSUES = {'unsupported_temporal_claim'}
+    _SAMPLING_NOTICE = '> **证据边界提示：** 趋势判断基于单次采样，仅供参考。'
+
     def __init__(self, provider: str = None):
         """
         Args:
@@ -114,6 +117,7 @@ class ReportGenerator:
             cached = self._load_cache(cache_key)
             if cached:
                 log.info("【报告】命中缓存: %s", cache_key[:16])
+                cached = self._add_sampling_notice(cached, sampling)
                 return {
                     'success': True,
                     'report': cached,
@@ -159,11 +163,25 @@ class ReportGenerator:
 
         expected_report_date = crawl_time[:10]
         guardrail_issues = self._validate_report(report, sampling, expected_report_date)
+        guardrail_warnings = [
+            issue for issue in guardrail_issues
+            if issue in self._SOFT_GUARDRAIL_ISSUES
+        ]
+        blocking_issues = [
+            issue for issue in guardrail_issues
+            if issue not in self._SOFT_GUARDRAIL_ISSUES
+        ]
         guardrail_repaired = False
-        if guardrail_issues and not quick:
-            log.warning("【报告校验】发现证据边界问题: %s", ", ".join(guardrail_issues))
+        if guardrail_warnings:
+            log.warning(
+                "【报告校验】非阻断证据提示: %s",
+                ", ".join(guardrail_warnings),
+            )
+
+        if blocking_issues and not quick:
+            log.warning("【报告校验】发现数据一致性问题: %s", ", ".join(blocking_issues))
             repair_prompt = self._build_repair_prompt(
-                report, guardrail_issues, sampling, expected_report_date
+                report, blocking_issues, sampling, expected_report_date
             )
             try:
                 repaired = self.client.chat(
@@ -178,23 +196,33 @@ class ReportGenerator:
                 self._validate_report(repaired, sampling, expected_report_date)
                 if repaired else ['empty_repair']
             )
-            if repaired and not repaired_issues:
+            repaired_blocking_issues = [
+                issue for issue in repaired_issues
+                if issue not in self._SOFT_GUARDRAIL_ISSUES
+            ]
+            if repaired and not repaired_blocking_issues:
                 report = repaired
                 guardrail_repaired = True
+                guardrail_warnings = [
+                    issue for issue in repaired_issues
+                    if issue in self._SOFT_GUARDRAIL_ISSUES
+                ]
             else:
                 log.warning(
                     "【报告校验】修订后仍未通过: %s",
-                    ", ".join(repaired_issues),
+                    ", ".join(repaired_blocking_issues),
                 )
                 return {
                     'success': False,
                     'report': '', 'report_path': '', 'from_cache': False,
                     'usage_info': {
-                        'guardrail_issues': guardrail_issues,
+                        'guardrail_issues': blocking_issues,
                         'repaired_issues': repaired_issues,
                     },
-                    'error': 'AI 报告未通过证据边界校验，已阻止展示。请重试。',
+                    'error': 'AI 报告存在数据一致性问题，自动修订失败。请重试。',
                 }
+
+        report = self._add_sampling_notice(report, sampling)
 
         # ── 5. 保存缓存 ──
         cache_path = self._save_cache(cache_key, report, topic)
@@ -206,7 +234,10 @@ class ReportGenerator:
             'report': report,
             'report_path': str(cache_path),
             'from_cache': False,
-            'usage_info': {'guardrail_repaired': guardrail_repaired},
+            'usage_info': {
+                'guardrail_repaired': guardrail_repaired,
+                'guardrail_warnings': guardrail_warnings,
+            },
             'error': None,
         }
 
@@ -308,6 +339,12 @@ class ReportGenerator:
             if 'nominal_count_presented_as_sample' in issues:
                 break
         return issues
+
+    def _add_sampling_notice(self, report: str, sampling: dict) -> str:
+        """Attach a visible caveat without hiding an otherwise useful report."""
+        if sampling.get('temporal_evidence') or self._SAMPLING_NOTICE in report:
+            return report
+        return f"{self._SAMPLING_NOTICE}\n\n{report}"
 
     def _build_repair_prompt(
         self, report: str, issues: list[str], sampling: dict,
