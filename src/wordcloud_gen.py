@@ -138,6 +138,16 @@ def get_font_properties():
     return None
 
 
+def _wordcloud_color_for_size(font_size: int, max_font_size: int) -> str:
+    """Use a restrained palette where visually important words stay darkest."""
+    ratio = font_size / max(max_font_size, 1)
+    if ratio >= 0.70:
+        return '#163B63'
+    if ratio >= 0.42:
+        return '#285F8F'
+    return '#58738E'
+
+
 def generate_wordcloud(text_series, output_path: str = 'output/wordcloud.png',
                        mask_image: str = None, font_path: str = None) -> WordCloud:
     """
@@ -177,7 +187,6 @@ def generate_wordcloud(text_series, output_path: str = 'output/wordcloud.png',
     wc = WordCloud(
         font_path=font_path,
         background_color='white',
-        colormap='Blues',
         max_words=WORDCLOUD_MAX_WORDS,
         max_font_size=100,
         width=WORDCLOUD_WIDTH,
@@ -187,6 +196,17 @@ def generate_wordcloud(text_series, output_path: str = 'output/wordcloud.png',
     )
 
     wc.generate(all_text)
+
+    # WordCloud's colormap chooses a colour independently of frequency, so a
+    # prominent word can randomly become very pale. Recolour by font size to
+    # keep high-frequency words dark and all labels readable.
+    max_rendered_size = max((item[1] for item in wc.layout_), default=1)
+    wc.recolor(
+        color_func=lambda word, font_size, position, orientation,
+        random_state=None, **kwargs: _wordcloud_color_for_size(
+            font_size, max_rendered_size
+        )
+    )
 
     # 确保输出目录存在
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -246,18 +266,21 @@ def generate_sentiment_distribution(stats: dict, output_path: str) -> str:
 
 
 def generate_sentiment_wordclouds(df, output_dir: str = 'output',
-                                  font_path: str = None) -> dict[str, str]:
+                                  font_path: str = None,
+                                  filename_suffix: str = None) -> dict[str, str]:
     """
     按情绪分类生成词云
 
     返回: {'积极': path, '消极': path, '中性': path}
     """
     log.info("按情绪分类生成词云...")
+    safe_suffix = re.sub(r'[^0-9A-Za-z_-]+', '_', str(filename_suffix or '')).strip('_')
+    suffix = f"_{safe_suffix}" if safe_suffix else ""
     paths = {}
     for sentiment in ['积极', '消极', '中性']:
         subset = df[df['nlp_result'] == sentiment]
         if not subset.empty and subset['clean_text'].str.strip().sum():
-            out_path = f"{output_dir}/wordcloud_{sentiment}.png"
+            out_path = str(Path(output_dir) / f"wordcloud_{sentiment}{suffix}.png")
             generate_wordcloud(subset['clean_text'], out_path, font_path=font_path)
             paths[sentiment] = out_path
         else:

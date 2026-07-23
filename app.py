@@ -405,7 +405,10 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
     generate_sentiment_distribution(stats, dist_path)
 
     sentiment_wc = generate_sentiment_wordclouds(
-        df, str(OUTPUT_DIR), font_path=font_path
+        df,
+        str(OUTPUT_DIR),
+        font_path=font_path,
+        filename_suffix=f"task_{task_id}",
     )
 
     keywords = extract_top_keywords(df, top_n=TOP_KEYWORDS_N)
@@ -923,6 +926,36 @@ if result is None and 'selected_task' in st.session_state:
         df = get_task_comments(task_id)
         keywords_data = json.loads(task['keywords_json']) if task['keywords_json'] else []
 
+        # Classified word clouds used to exist only in session memory. Give
+        # every task deterministic paths and rebuild older/missing artifacts
+        # from the comments already stored in SQLite.
+        sentiment_wc = {
+            sentiment: str(OUTPUT_DIR / f"wordcloud_{sentiment}_task_{task_id}.png")
+            for sentiment in ['积极', '消极', '中性']
+        }
+        existing_sentiment_wc = {
+            sentiment: path if Path(path).exists() else None
+            for sentiment, path in sentiment_wc.items()
+        }
+        available_sentiments = set(df['nlp_result'].dropna()) if 'nlp_result' in df.columns else set()
+        missing_required_cloud = any(
+            sentiment in available_sentiments and not existing_sentiment_wc[sentiment]
+            for sentiment in sentiment_wc
+        )
+        if missing_required_cloud and not df.empty:
+            history_wc_df = df.copy()
+            if 'clean_text' not in history_wc_df.columns:
+                history_wc_df['clean_text'] = history_wc_df.get('cleaned_content', '')
+            try:
+                existing_sentiment_wc = generate_sentiment_wordclouds(
+                    history_wc_df,
+                    str(OUTPUT_DIR),
+                    font_path=find_chinese_font(),
+                    filename_suffix=f"task_{task_id}",
+                )
+            except Exception as exc:
+                log.warning("重建任务 #%s 分类词云失败: %s", task_id, exc)
+
         result = {
             'total': task['total_comments'],
             'unique_total': task.get('unique_comments') or task['total_comments'],
@@ -934,6 +967,7 @@ if result is None and 'selected_task' in st.session_state:
             'neu_pct': round(task['neu_count'] / task['total_comments'] * 100, 1) if task['total_comments'] else 0,
             'df': df,
             'wc_path': task['wordcloud_path'],
+            'sentiment_wc': existing_sentiment_wc,
             'keywords': [(k['word'], k['freq']) for k in keywords_data],
             'posts': get_task_posts(task_id),
             'source': task.get('source'),
