@@ -1,0 +1,43 @@
+# Local credentials
+.env
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.venv/
+
+# Runtime data
+cookies/
+logs/
+debug/
+data/
+output/
+results/
+
+# Local binaries and downloaded model caches
+chromedriver-win64/
+model/paddle_sentiment/
+model/bert_sentiment/
+
+# Local notebooks and editor state
+.ipynb_checkpoints/
+.DS_Store
+
+# Streamlit secrets must only live in the hosting control panel
+.streamlit/secrets.toml
+
+# Coursework source/archive files that are not part of the deployed app
+.vscode/
+pythoncode/
+*.ipynb
+*.csv
+!examples/*.csv
+model/
+AGENTS.md
+CLAUDE.md
+AI_PROVIDER_MIGRATION.md
+SENTIMENT_MODULE_UPGRADE_GUIDE.md
+requirements-minimal.txt
+test_ai_provider.py
+test_sentiment_module.py
+=4.0.0

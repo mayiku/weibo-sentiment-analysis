@@ -1,0 +1,7 @@
+# Full local model stack. Use this file for a workstation or a larger Docker host.
+-r requirements.txt
+
+paddlepaddle>=2.5.0
+paddlenlp>=2.6.0
+transformers>=4.35.0
+torch>=2.0.0

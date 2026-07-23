@@ -1,0 +1,43 @@
+# 微博情绪分析系统 — Python 依赖
+# 安装: pip install -r requirements.txt
+
+# Web 框架
+streamlit==1.55.0
+
+# 数据处理
+pandas==2.3.3
+numpy>=1.26,<3
+
+# 中文 NLP
+snownlp==0.12.3
+jieba==0.42.1
+
+# 云端展示默认使用 SnowNLP / Hybrid，避免免费实例安装数 GB 深度学习运行时。
+# Paddle 与 BERT 完整依赖见 requirements-full.txt。
+
+# 机器学习 (在线学习引擎)
+scikit-learn>=1.5,<2
+
+# 可视化
+matplotlib>=3.8,<4
+wordcloud>=1.9,<2
+Pillow>=10,<13
+
+# 爬虫
+selenium>=4.25,<5
+webdriver-manager>=4.0,<5
+requests>=2.32,<3
+
+# AI Agent
+python-dotenv>=1.0,<2
+
+# 模型持久化
+joblib>=1.4,<2
+
+# 性能优化和工具
+protobuf>=5,<6                # 与 Streamlit Cloud 的运行栈保持兼容
+colorlog>=6.9,<7              # 彩色日志
+psutil>=6,<8                  # 系统监控
+
+# 序列化
+msgpack>=1.0,<2               # 高效的序列化格式
