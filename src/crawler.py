@@ -1901,6 +1901,9 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
 
         if incremental:
             from src.incremental import merge_snapshot
+            log.info("【增量】正在批量保存 %d 条评论...", len(all_comments))
+            if status_callback:
+                status_callback(f"正在保存增量快照 · {len(all_comments)} 条评论")
             posts_with_comments, incremental_metadata = merge_snapshot(
                 series_id, run_id, posts_with_comments
             )

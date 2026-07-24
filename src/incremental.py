@@ -86,9 +86,24 @@ def merge_snapshot(series_id: int, run_id: int,
                    posts: list[dict]) -> tuple[list[dict], dict[str, Any]]:
     """Merge one crawl pass into persistent observations and return cumulative posts."""
     conn = get_connection()
-    new_comments = 0
     now = _utc_now().isoformat(timespec="seconds")
     try:
+        # Fetch existing keys once. The previous implementation performed an
+        # INSERT, optional UPDATE and COUNT query for every comment/post. That
+        # was acceptable for local SQLite but caused hundreds of sequential
+        # network round trips with Turso.
+        existing_keys = {
+            (str(row["weibo_id"]), str(row["comment_key"]))
+            for row in conn.execute(
+                """SELECT weibo_id, comment_key FROM crawl_observations
+                   WHERE series_id=?""",
+                (series_id,),
+            ).fetchall()
+        }
+
+        observation_rows = []
+        current_keys = set()
+        checkpoint_payloads = []
         for post in posts:
             weibo_id = str(post.get("weibo_id", ""))
             if not weibo_id:
@@ -104,20 +119,13 @@ def merge_snapshot(series_id: int, run_id: int,
                     continue
                 comment_id = str(record.get("comment_id", ""))
                 key = _stable_key(weibo_id, text, comment_id)
-                cur = conn.execute(
-                    """INSERT OR IGNORE INTO crawl_observations
-                       (series_id, weibo_id, comment_key, comment_id, content,
-                        first_seen_at, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (series_id, weibo_id, key, comment_id, text, now, now),
+                compound_key = (weibo_id, key)
+                if compound_key in current_keys:
+                    continue
+                current_keys.add(compound_key)
+                observation_rows.append(
+                    (series_id, weibo_id, key, comment_id, text, now, now)
                 )
-                new_comments += max(cur.rowcount, 0)
-                if cur.rowcount == 0:
-                    conn.execute(
-                        """UPDATE crawl_observations SET last_seen_at=?
-                           WHERE series_id=? AND weibo_id=? AND comment_key=?""",
-                        (now, series_id, weibo_id, key),
-                    )
 
             report = dict(post.get("fetch_report") or {})
             report.pop("comment_records", None)
@@ -131,12 +139,45 @@ def merge_snapshot(series_id: int, run_id: int,
                 "fetch_method": post.get("fetch_method", "unknown"),
                 "fetch_report": report,
             }
-            observed = conn.execute(
-                """SELECT COUNT(*) FROM crawl_observations
-                   WHERE series_id=? AND weibo_id=?""",
-                (series_id, weibo_id),
-            ).fetchone()[0]
-            conn.execute(
+            checkpoint_payloads.append((post, report, metadata))
+
+        new_comments = len(current_keys - existing_keys)
+        if observation_rows:
+            log.info("【增量】批量写入 %d 条观测记录...", len(observation_rows))
+            conn.executemany(
+                """INSERT INTO crawl_observations
+                   (series_id, weibo_id, comment_key, comment_id, content,
+                    first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(series_id, weibo_id, comment_key) DO UPDATE SET
+                       last_seen_at=excluded.last_seen_at""",
+                observation_rows,
+            )
+
+        observed_counts = {
+            str(row["weibo_id"]): int(row["observed_total"])
+            for row in conn.execute(
+                """SELECT weibo_id, COUNT(*) AS observed_total
+                   FROM crawl_observations WHERE series_id=?
+                   GROUP BY weibo_id""",
+                (series_id,),
+            ).fetchall()
+        }
+        checkpoint_rows = []
+        for post, report, metadata in checkpoint_payloads:
+            weibo_id = str(post.get("weibo_id", ""))
+            checkpoint_rows.append((
+                series_id,
+                weibo_id,
+                post.get("comment_count", -1),
+                observed_counts.get(weibo_id, 0),
+                str(report.get("last_cursor", "")),
+                report.get("stop_reason", "unknown"),
+                json.dumps(metadata, ensure_ascii=False),
+                now,
+            ))
+        if checkpoint_rows:
+            conn.executemany(
                 """INSERT INTO crawl_checkpoints
                    (series_id, weibo_id, expected_total, observed_total,
                     last_cursor, stop_reason, metadata_json, updated_at)
@@ -148,11 +189,7 @@ def merge_snapshot(series_id: int, run_id: int,
                        stop_reason=excluded.stop_reason,
                        metadata_json=excluded.metadata_json,
                        updated_at=excluded.updated_at""",
-                (
-                    series_id, weibo_id, post.get("comment_count", -1), observed,
-                    str(report.get("last_cursor", "")), report.get("stop_reason", "unknown"),
-                    json.dumps(metadata, ensure_ascii=False), now,
-                ),
+                checkpoint_rows,
             )
 
         total_unique = conn.execute(
@@ -183,13 +220,19 @@ def merge_snapshot(series_id: int, run_id: int,
             "SELECT * FROM crawl_checkpoints WHERE series_id=? ORDER BY expected_total DESC",
             (series_id,),
         ).fetchall()
+        observations_by_post = {}
+        observation_results = conn.execute(
+            """SELECT weibo_id, comment_id, content
+               FROM crawl_observations WHERE series_id=?
+               ORDER BY weibo_id, first_seen_at, comment_key""",
+            (series_id,),
+        ).fetchall()
+        for row in observation_results:
+            observations_by_post.setdefault(str(row["weibo_id"]), []).append(row)
+
         for checkpoint in checkpoints:
             meta = json.loads(checkpoint["metadata_json"] or "{}")
-            rows = conn.execute(
-                """SELECT comment_id, content FROM crawl_observations
-                   WHERE series_id=? AND weibo_id=? ORDER BY first_seen_at, comment_key""",
-                (series_id, checkpoint["weibo_id"]),
-            ).fetchall()
+            rows = observations_by_post.get(str(checkpoint["weibo_id"]), [])
             comments = [row["content"] for row in rows]
             records = [
                 {"comment_id": row["comment_id"], "text": row["content"]}
