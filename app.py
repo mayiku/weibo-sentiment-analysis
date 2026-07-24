@@ -379,14 +379,19 @@ def _find_recovery_candidate(tasks: list[dict]):
         'generating_wordcloud', 'failed',
     }
     csv_files = list(DATA_DIR.glob("weibo_topic_*.csv"))
+    newest_task_by_topic = {}
     for task in tasks:
+        newest_task_by_topic.setdefault(str(task.get('topic', '')), task.get('id'))
+    for task in tasks:
+        topic = str(task.get('topic', ''))
         if (
             task.get('source') != 'crawler'
             or task.get('status') not in recoverable_statuses
             or int(task.get('total_comments') or 0) > 0
+            or newest_task_by_topic.get(topic) != task.get('id')
         ):
             continue
-        prefix = f"weibo_topic_{task.get('topic', '')}_"
+        prefix = f"weibo_topic_{topic}_"
         matches = [path for path in csv_files if path.stem.startswith(prefix)]
         if not matches:
             try:
@@ -419,11 +424,20 @@ def _find_recovery_candidate(tasks: list[dict]):
                         'comment_count_on_card': post.get('comment_count', 0),
                         'post_time': post.get('post_time', ''),
                         'url': post.get('url', ''),
+                        'comments': [
+                            record.get('text', '')
+                            for record in post.get('comment_records', [])
+                        ],
+                        'fetched_comment_count': len(post.get('comment_records', [])),
                     } for post in posts]
                     recovered_csv.with_name(
                         f"{recovered_csv.stem}_structured.json"
                     ).write_text(
-                        json.dumps({'posts': structured_posts}, ensure_ascii=False),
+                        json.dumps({
+                            'posts': structured_posts,
+                            'total_posts': len(structured_posts),
+                            'total_comments': len(rows),
+                        }, ensure_ascii=False),
                         encoding='utf-8',
                     )
                     log.warning(
