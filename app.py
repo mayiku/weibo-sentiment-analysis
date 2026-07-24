@@ -19,10 +19,14 @@ from src.logger import get_logger, get_log_file
 from src.database import (
     DATABASE_SCHEMA_VERSION,
     init_db, create_task, update_task_status, update_task_results,
-    touch_task, fail_task_if_active, reconcile_stale_tasks,
     insert_comments, insert_keywords, insert_posts,
     get_task, get_all_tasks, get_task_comments, get_task_posts,
     get_structured_data, delete_task, update_task_report,
+)
+from src.task_lifecycle import (
+    fail_task_if_active,
+    reconcile_stale_tasks,
+    touch_task,
 )
 from src.cleaner import clean_dataframe, clean_csv
 from src.quality import assess_result_quality, load_crawl_metadata
