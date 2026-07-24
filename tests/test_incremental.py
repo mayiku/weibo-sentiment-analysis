@@ -101,6 +101,27 @@ class IncrementalCollectionTests(unittest.TestCase):
                 self.assertEqual(counted.executemany_calls, 2)
                 self.assertLessEqual(counted.execute_calls, 8)
 
+    def test_recovery_includes_observations_committed_before_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "checkpointless.db"
+            with patch.object(database, "DATABASE_PATH", db_path):
+                database.init_db()
+                series_id, _ = begin_run("中断话题")
+                conn = database.get_connection()
+                conn.execute(
+                    """INSERT INTO crawl_observations
+                       (series_id, weibo_id, comment_key, comment_id, content)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (series_id, "orphan-post", "id:c1", "c1", "已持久化评论"),
+                )
+                conn.commit()
+                conn.close()
+
+                recovered = get_series_snapshot("中断话题")
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0]["weibo_id"], "orphan-post")
+                self.assertEqual(recovered[0]["comment_records"][0]["text"], "已持久化评论")
+
 
 if __name__ == "__main__":
     unittest.main()

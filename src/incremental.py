@@ -320,7 +320,9 @@ def get_series_snapshot(topic: str) -> list[dict[str, Any]]:
             observations_by_post.setdefault(str(row["weibo_id"]), []).append(row)
 
         posts = []
+        checkpoint_weibo_ids = set()
         for checkpoint in checkpoints:
+            checkpoint_weibo_ids.add(str(checkpoint["weibo_id"]))
             meta = json.loads(checkpoint["metadata_json"] or "{}")
             rows = observations_by_post.get(str(checkpoint["weibo_id"]), [])
             if not rows:
@@ -332,6 +334,23 @@ def get_series_snapshot(topic: str) -> list[dict[str, Any]]:
                 "post_time": meta.get("post_time", ""),
                 "comment_count": checkpoint["expected_total"],
                 "url": meta.get("url", ""),
+                "comment_records": [
+                    {"comment_id": row["comment_id"], "text": row["content"]}
+                    for row in rows
+                ],
+            })
+        # Earlier interrupted crawls may have committed observations before
+        # their checkpoint rows. Those comments are still valid recovery data.
+        for weibo_id, rows in observations_by_post.items():
+            if weibo_id in checkpoint_weibo_ids:
+                continue
+            posts.append({
+                "weibo_id": weibo_id,
+                "username": "",
+                "post_content": "",
+                "post_time": "",
+                "comment_count": len(rows),
+                "url": "",
                 "comment_records": [
                     {"comment_id": row["comment_id"], "text": row["content"]}
                     for row in rows
