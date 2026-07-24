@@ -855,9 +855,14 @@ with st.sidebar:
     tasks = _get_recent_tasks(limit=20)
     recovery_candidate = _find_recovery_candidate(tasks)
     recovery_btn = False
+    auto_recovery = False
     if recovery_candidate:
         recovery_task = recovery_candidate['task']
         recovery_csv = recovery_candidate['csv_path']
+        auto_recovery = (
+            recovery_task.get('status') == 'generating_wordcloud'
+            and recovery_csv.stem.endswith('_turso_recovery')
+        )
         st.warning(
             f"发现可恢复的中断任务 #{recovery_task['id']} · "
             f"{recovery_task['topic']} · {recovery_csv.name}"
@@ -918,7 +923,7 @@ with st.sidebar:
 
 # ── 主区域 ─────────────────────────────────────────────
 # 处理分析请求
-if recovery_btn:
+if recovery_btn or auto_recovery:
     recovery_task = recovery_candidate['task']
     recovery_csv = recovery_candidate['csv_path']
     recovery_task_id = int(recovery_task['id'])
