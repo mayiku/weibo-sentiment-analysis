@@ -356,7 +356,22 @@ def _initialize_database_once(schema_version: int):
 
 
 _initialize_database_once(DATABASE_SCHEMA_VERSION)
-reconcile_stale_tasks(stale_after_minutes=45)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _reconcile_stale_tasks_periodically(schema_version: int):
+    # Avoid a remote UPDATE on every Streamlit rerun when Turso is enabled.
+    return reconcile_stale_tasks(stale_after_minutes=45)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def _get_recent_tasks(limit: int = 20):
+    # Sidebar interactions rerun the whole script; a short cache removes
+    # redundant remote reads while keeping task history effectively current.
+    return get_all_tasks(limit=limit)
+
+
+_reconcile_stale_tasks_periodically(DATABASE_SCHEMA_VERSION)
 
 
 # ── 辅助函数 ───────────────────────────────────────────
@@ -764,7 +779,7 @@ with st.sidebar:
 
     # 历史记录
     st.subheader("历史任务")
-    tasks = get_all_tasks(limit=20)
+    tasks = _get_recent_tasks(limit=20)
     if tasks:
         for t in tasks:
             status_label = {
@@ -1513,9 +1528,11 @@ else:
             driver_ok = bool(find_chrome_binary() and find_chromedriver())
             st.metric("ChromeDriver", "就绪" if driver_ok else "缺失")
         with status_cols[2]:
-            from config import DATABASE_PATH
-            db_ok = Path(DATABASE_PATH).exists()
-            st.metric("SQLite 数据库", "已初始化" if db_ok else "待初始化")
+            if TURSO_DATABASE_URL:
+                st.metric("数据库", "Turso Cloud")
+            else:
+                from config import DATABASE_PATH
+                db_ok = Path(DATABASE_PATH).exists()
+                st.metric("SQLite 数据库", "已初始化" if db_ok else "待初始化")
         with status_cols[3]:
-            tasks_count = len(get_all_tasks())
-            st.metric("历史任务", f"{tasks_count} 条")
+            st.metric("最近任务", f"{len(tasks)} 条")

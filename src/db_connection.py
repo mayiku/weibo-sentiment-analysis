@@ -82,8 +82,9 @@ class LibSQLConnection:
 
     is_turso = True
 
-    def __init__(self, connection):
+    def __init__(self, connection, *, close_connection: bool = True):
         self._connection = connection
+        self._close_connection = close_connection
 
     def cursor(self):
         return LibSQLCursor(self._connection.cursor())
@@ -105,7 +106,9 @@ class LibSQLConnection:
         return self._connection.rollback()
 
     def close(self):
-        return self._connection.close()
+        if self._close_connection:
+            return self._connection.close()
+        return None
 
     def __enter__(self):
         return self
