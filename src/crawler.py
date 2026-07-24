@@ -51,6 +51,10 @@ from config import (
     CRAWLER_API_MAX_PAGES,
     CRAWLER_API_DELAY_MIN,
     CRAWLER_API_DELAY_MAX,
+    CRAWLER_API_ALTERNATE_FLOW_ENABLED,
+    CRAWLER_API_ALTERNATE_FLOW_MIN_COMMENTS,
+    CRAWLER_API_ALTERNATE_FLOW_COVERAGE_THRESHOLD,
+    CRAWLER_API_ALTERNATE_FLOW_MAX_POSTS,
     DATA_DIR,
     DEBUG_DIR,
     COOKIE_DIR,
@@ -1644,6 +1648,20 @@ def verify_crawler_env() -> dict:
 # V2: API-based 评论抓取 (requests 替代 Selenium scroll)
 # ============================================================================
 
+def _should_try_alternate_flow(comment_count: int, report: dict,
+                               attempts_used: int) -> bool:
+    """Return whether a material, under-covered post merits one extra API view."""
+    return bool(
+        CRAWLER_API_ALTERNATE_FLOW_ENABLED
+        and attempts_used < CRAWLER_API_ALTERNATE_FLOW_MAX_POSTS
+        and isinstance(comment_count, int)
+        and comment_count >= CRAWLER_API_ALTERNATE_FLOW_MIN_COMMENTS
+        and report.get('request_succeeded')
+        and not report.get('checkpoint_reached')
+        and float(report.get('coverage_pct') or 0)
+        < CRAWLER_API_ALTERNATE_FLOW_COVERAGE_THRESHOLD
+    )
+
 def crawl_topic_v2(topic_keyword: str, page_num: int = None,
                    scroll_times: int = None,
                    use_mock: bool = False,
@@ -1721,23 +1739,9 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
         log.info("【步骤3/4】初始化 API 客户端")
         api = WeiboAPIClient()
         cookie_count = api.load_cookies_from_selenium(driver)
-        conn = api.test_connection()
-        log.info("  Cookies: %d | PC API: %s | Mobile API: %s",
-                 cookie_count, conn['pc_api'], conn['mobile_api'])
-
-        # ★ API 端点自动发现 (用第一个有评论的帖子做探测)
-        discovery = None
-        if posts:
-            for p in posts:
-                if p.get('comment_count', -1) != 0:
-                    try:
-                        discovery = api.discover_endpoint(p['weibo_id'])
-                        log.info("  API 发现: %s (total=%d)",
-                                 discovery.get('endpoint_name', '?'),
-                                 discovery.get('total_test', 0))
-                    except Exception as e:
-                        log.warning("  API 发现失败: %s", e)
-                    break  # 只探测第一个有评论的帖子
+        # 首个真实评论请求本身就是最可靠的连通性检查。旧版额外发送
+        # test_connection + 多端点发现请求，但发现结果并未用于抓取。
+        log.info("  Cookies: %d | API 将在首个有评论帖子上直接验证", cookie_count)
 
         log.info("【步骤4/4】抓取评论 (%d 帖, API优先)", len(posts))
         if status_callback:
@@ -1747,13 +1751,13 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
         skipped_zero = 0
         api_consecutive_fails = 0  # ★ 连续 API 失败计数
         api_disabled = False       # ★ 3 次连续失败后禁用 API
+        alternate_flow_passes = 0
 
         for i, post_info in enumerate(posts):
             mid = post_info['weibo_id']
             cc = post_info.get('comment_count', -1)
 
             log.info(">> 帖 %d/%d mid=%s card_cc=%d", i + 1, len(posts), mid, cc)
-            _random_delay(CRAWLER_API_DELAY_MIN, CRAWLER_API_DELAY_MAX)
 
             if cc == 0:
                 skipped_zero += 1
@@ -1766,6 +1770,8 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
                     },
                 })
                 continue
+
+            _random_delay(CRAWLER_API_DELAY_MIN, CRAWLER_API_DELAY_MAX)
 
             comments = []
             comment_records = []
@@ -1785,6 +1791,46 @@ def crawl_topic_v2(topic_keyword: str, page_num: int = None,
                         stop_after_known_pages=2,
                     )
                     comment_records = report.pop('comment_records', [])
+                    should_try_alternate = _should_try_alternate_flow(
+                        cc, report, alternate_flow_passes
+                    )
+                    if should_try_alternate:
+                        alternate_flow_passes += 1
+                        primary_ids = {
+                            str(record.get('comment_id')) for record in comment_records
+                            if record.get('comment_id')
+                        }
+                        log.info(
+                            "  [API] 高评论帖覆盖率 %.1f%%，尝试时间排序补采",
+                            report.get('coverage_pct', 0),
+                        )
+                        extra_comments, extra_report = api.get_all_comments(
+                            mid, flow=1,
+                            known_comment_ids=known_ids | primary_ids,
+                            stop_after_known_pages=1,
+                        )
+                        extra_records = extra_report.pop('comment_records', [])
+                        comments.extend(extra_comments)
+                        comment_records.extend(extra_records)
+                        expected_total = int(report.get('expected_total') or cc or 0)
+                        combined_coverage = (
+                            round(min(len(comments) / expected_total * 100, 100.0), 1)
+                            if expected_total > 0 else report.get('coverage_pct')
+                        )
+                        report.update({
+                            'actual_fetched': len(comments),
+                            'coverage_pct': combined_coverage,
+                            'incomplete': bool(expected_total and len(comments) < expected_total),
+                            'alternate_flow_attempted': True,
+                            'alternate_flow_added': len(extra_comments),
+                            'alternate_flow_stop_reason': extra_report.get('stop_reason'),
+                            'api_calls': int(report.get('api_calls') or 0)
+                            + int(extra_report.get('api_calls') or 0),
+                        })
+                        log.info(
+                            "  [API] 时间排序补采新增 %d 条，合计 %d 条 (%.1f%%)",
+                            len(extra_comments), len(comments), combined_coverage or 0,
+                        )
                     if comments or report.get('checkpoint_reached'):
                         fetch_method = 'api_mobile' if report.get('use_mobile') else 'api_pc'
                         fetch_report = report

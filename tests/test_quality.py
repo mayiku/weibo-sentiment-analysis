@@ -3,7 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.quality import assess_result_quality, load_crawl_metadata
+from src.quality import (
+    assess_result_quality,
+    enrich_quality_with_sampling,
+    load_crawl_metadata,
+)
 
 
 class QualityAssessmentTests(unittest.TestCase):
@@ -91,6 +95,23 @@ class QualityAssessmentTests(unittest.TestCase):
         self.assertEqual(result["representation_status"], "limited")
         self.assertEqual(result["per_post"][0]["expected_share_pct"], 90.0)
         self.assertEqual(result["coverage_excluding_dominant_pct"], 100.0)
+
+    def test_partial_sampling_changes_an_otherwise_good_quality_verdict(self):
+        base = assess_result_quality(
+            total=231, positive=124, negative=64, neutral=43,
+            coverage_pct=59.8,
+        )
+        enriched = enrich_quality_with_sampling(base, {
+            "coverage_pct": 59.8,
+            "representation_status": "partial",
+            "dominant_post_share_pct": 30.2,
+            "dominant_post_coverage_pct": 12.8,
+        })
+        self.assertEqual(base["status"], "good")
+        self.assertEqual(enriched["status"], "warning")
+        issue = next(i for i in enriched["issues"] if i["code"] == "sampling_bias")
+        self.assertIn("12.8%", issue["message"])
+        self.assertIn("仅代表本次可见评论", issue["message"])
 
 
 if __name__ == "__main__":

@@ -120,7 +120,10 @@ def load_crawl_metadata(structured_path: str | None) -> dict[str, Any]:
         and dominant_coverage is not None and dominant_coverage < 20
     ):
         representation = "limited"
-    elif coverage < 60:
+    elif coverage < 60 or (
+        dominant_share is not None and dominant_share >= 25
+        and dominant_coverage is not None and dominant_coverage < 20
+    ):
         representation = "partial"
     else:
         representation = "good"
@@ -217,3 +220,42 @@ def assess_result_quality(
         status = "good"
 
     return {"status": status, "issues": issues}
+
+
+def enrich_quality_with_sampling(
+    quality: dict[str, Any], sampling: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge sampling representativeness into the result quality verdict."""
+    result = {
+        "status": quality.get("status", "good"),
+        "issues": list(quality.get("issues") or []),
+    }
+    representation = sampling.get("representation_status", "unknown")
+    if representation not in {"limited", "partial"}:
+        return result
+    if any(issue.get("code") == "sampling_bias" for issue in result["issues"]):
+        return result
+
+    coverage = sampling.get("coverage_pct")
+    dominant_share = sampling.get("dominant_post_share_pct")
+    dominant_coverage = sampling.get("dominant_post_coverage_pct")
+    details = []
+    if coverage is not None:
+        details.append(f"总体覆盖率 {float(coverage):.1f}%")
+    if (
+        dominant_share is not None and dominant_coverage is not None
+        and float(dominant_share) >= 25 and float(dominant_coverage) < 20
+    ):
+        details.append(
+            f"最高评论量帖子占预期样本 {float(dominant_share):.1f}%"
+            f"，但仅采集 {float(dominant_coverage):.1f}%"
+        )
+    prefix = "；".join(details) or "逐帖采集覆盖不均"
+    result["issues"].append({
+        "code": "sampling_bias",
+        "severity": "warning",
+        "message": f"{prefix}，情绪比例仅代表本次可见评论。",
+    })
+    if result["status"] != "invalid":
+        result["status"] = "warning"
+    return result

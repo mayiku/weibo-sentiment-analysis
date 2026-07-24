@@ -27,7 +27,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from config import REPORT_DIR, AI_PROVIDER, CURRENT_API_KEY
+from config import (
+    AI_PROVIDER,
+    AI_QUICK_REPORT_MAX_TOKENS,
+    AI_REPAIR_MAX_TOKENS,
+    AI_REPORT_MAX_TOKENS,
+    CURRENT_API_KEY,
+    REPORT_DIR,
+)
 from src.ai_agent.ai_provider import create_ai_client
 from src.ai_agent.prompts import build_analysis_prompt, build_quick_prompt, SYSTEM_PROMPT
 from src.logger import get_logger
@@ -139,11 +146,13 @@ class ReportGenerator:
         if quick:
             prompt = build_quick_prompt(topic, stats, posts, keywords, sampling=sampling)
             temperature = 0.5
+            report_max_tokens = AI_QUICK_REPORT_MAX_TOKENS
         else:
             prompt = build_analysis_prompt(
                 topic, stats, posts, keywords, samples, crawl_time, sampling=sampling
             )
             temperature = 0.3
+            report_max_tokens = AI_REPORT_MAX_TOKENS
 
         log.info("【报告】Prompt 长度: %d 字符", len(prompt))
 
@@ -153,6 +162,7 @@ class ReportGenerator:
                 prompt=prompt,
                 system_prompt=SYSTEM_PROMPT,
                 temperature=temperature,
+                max_tokens=report_max_tokens,
             )
         except Exception as e:
             log.error("【报告】LLM 调用异常: %s", e)
@@ -196,6 +206,7 @@ class ReportGenerator:
                     prompt=repair_prompt,
                     system_prompt=SYSTEM_PROMPT,
                     temperature=0.1,
+                    max_tokens=AI_REPAIR_MAX_TOKENS,
                 )
             except Exception as exc:
                 log.error("【报告校验】修订调用失败: %s", exc)
@@ -245,6 +256,8 @@ class ReportGenerator:
             'usage_info': {
                 'guardrail_repaired': guardrail_repaired,
                 'guardrail_warnings': guardrail_warnings,
+                'api_usage': getattr(self.client, 'last_usage', {}),
+                'latency_seconds': getattr(self.client, 'last_latency_seconds', None),
             },
             'error': None,
         }

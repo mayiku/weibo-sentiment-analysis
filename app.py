@@ -19,12 +19,14 @@ from src.logger import get_logger, get_log_file
 from src.database import (
     DATABASE_SCHEMA_VERSION,
     init_db, create_task, update_task_status, update_task_results,
+    touch_task, fail_task_if_active, reconcile_stale_tasks,
     insert_comments, insert_keywords, insert_posts,
     get_task, get_all_tasks, get_task_comments, get_task_posts,
     get_structured_data, delete_task, update_task_report,
 )
 from src.cleaner import clean_dataframe, clean_csv
 from src.quality import assess_result_quality, load_crawl_metadata
+from src import quality as quality_module
 # 延迟导入sentiment模块，避免启动时PyTorch加载错误
 try:
     from src.sentiment import (
@@ -93,9 +95,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-if not st.session_state.get('_weibo_cookie_config_logged'):
-    log.info("微博 Cookie 配置状态: %s", "已配置" if WEIBO_COOKIE else "未配置")
-    st.session_state['_weibo_cookie_config_logged'] = True
+@st.cache_resource
+def _log_runtime_configuration_once(cookie_configured: bool, python_version: str):
+    """Emit deployment configuration once per process, not once per session."""
+    log.info("微博 Cookie 配置状态: %s", "已配置" if cookie_configured else "未配置")
+    if python_version != "3.12":
+        log.warning(
+            "运行时 Python %s 与项目声明 3.12 不一致，依赖兼容性可能受影响。",
+            python_version,
+        )
+    else:
+        log.info("运行时 Python %s 与项目声明一致", python_version)
+    return True
+
+
+_log_runtime_configuration_once(
+    bool(WEIBO_COOKIE), f"{sys.version_info.major}.{sys.version_info.minor}"
+)
 
 # ── 自定义 CSS ─────────────────────────────────────────
 st.markdown("""
@@ -329,6 +345,7 @@ def _initialize_database_once(schema_version: int):
 
 
 _initialize_database_once(DATABASE_SCHEMA_VERSION)
+reconcile_stale_tasks(stale_after_minutes=45)
 
 
 # ── 辅助函数 ───────────────────────────────────────────
@@ -486,6 +503,11 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
         fallback_used=analysis_metadata.get('fallback_used', False),
         raw_comments=cleaning_metadata.get('raw_comments'),
     )
+    # Newer quality modules include per-post representativeness checks. Keep
+    # hot reload compatible if Streamlit still holds an older module object.
+    enrich_sampling = getattr(quality_module, 'enrich_quality_with_sampling', None)
+    if enrich_sampling:
+        quality = enrich_sampling(quality, crawl_metadata)
     # Keep this call compatible with a stale quality module during Streamlit
     # hot reloads. Enrich the warning here instead of requiring a new keyword
     # argument to have loaded atomically across modules.
@@ -578,7 +600,7 @@ with st.sidebar:
     st.header("分析工作台")
 
     # 日志文件信息
-    st.caption(f"运行日志 · {get_log_file().name}")
+    st.caption(f"当前实例日志 · {get_log_file().name}")
 
     st.divider()
 
@@ -796,7 +818,14 @@ if start_btn:
         with st.status("处理上传数据", expanded=True) as pipeline_status:
             pipeline_status.update(label="步骤 1/2 · 数据清洗与情绪分析", state="running")
             model_type = st.session_state.get('selected_model', 'hybrid')
-            result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
+            try:
+                result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
+            except BaseException as exc:
+                fail_task_if_active(
+                    task_id,
+                    f"上传分析被中断：{str(exc) or type(exc).__name__}",
+                )
+                raise
             st.write(f"分析完成 · {result['total']} 条评论 · {model_type.upper()}")
 
             pipeline_status.update(label="步骤 2/2 · 完成", state="complete")
@@ -832,6 +861,7 @@ if start_btn:
                 login_msgs.info(msg)
 
             def update_progress(step_index, label_suffix=""):
+                touch_task(task_id)
                 progress = int((step_index / len(progress_steps)) * 100)
                 pipeline_progress.progress(progress)
                 step_label = f"{step_index + 1}/7 · {progress_steps[step_index]}"
@@ -883,11 +913,30 @@ if start_btn:
                     update_task_status(task_id, 'failed', str(e2))
                     st.error(f"采集失败：{e2}")
                     st.stop()
+                except BaseException as interrupted:
+                    fail_task_if_active(
+                        task_id,
+                        f"采集会话被中断：{str(interrupted) or type(interrupted).__name__}",
+                    )
+                    raise
+            except BaseException as interrupted:
+                fail_task_if_active(
+                    task_id,
+                    f"采集会话被中断：{str(interrupted) or type(interrupted).__name__}",
+                )
+                raise
 
             # 步骤4-7: 后续处理
             update_progress(3, "· 数据清洗")
             model_type = st.session_state.get('selected_model', 'hybrid')
-            result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
+            try:
+                result = run_pipeline(topic, csv_path, task_id, model_type=model_type)
+            except BaseException as exc:
+                fail_task_if_active(
+                    task_id,
+                    f"分析流程被中断：{str(exc) or type(exc).__name__}",
+                )
+                raise
             st.write(f"{result['total']} 条评论 · 积极 {result['pos_pct']}% · 中性 {result['neu_pct']}% · 消极 {result['neg_pct']}%")
 
             # 步骤5-6: 情感分析和生成词云

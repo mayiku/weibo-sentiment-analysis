@@ -3,6 +3,7 @@ from pathlib import Path
 
 from src.ai_agent.prompts import build_analysis_prompt
 from src.ai_agent.report_generator import ReportGenerator
+from config import AI_REPORT_MAX_TOKENS
 
 
 class ReportSamplingTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class ReportSamplingTests(unittest.TestCase):
         self.assertIn("采集覆盖率 4.3%", prompt)
         self.assertIn("不能代表整体舆情", prompt)
         self.assertIn("不得把横截面数据写成时间趋势", prompt)
+        self.assertIn("1200-1800", prompt)
 
     def test_prompt_distinguishes_nominal_and_analyzed_post_counts(self):
         prompt = build_analysis_prompt(
@@ -116,6 +118,35 @@ class ReportSamplingTests(unittest.TestCase):
         self.assertEqual(generator.client.calls, 1)
         self.assertIn('趋势判断基于单次采样，仅供参考', result['report'])
         self.assertIn('unsupported_temporal_claim', result['usage_info']['guardrail_warnings'])
+
+    def test_full_report_uses_bounded_output_budget(self):
+        class FakeClient:
+            api_key = 'test-key'
+
+            def __init__(self):
+                self.kwargs = None
+                self.last_usage = {'total_tokens': 100}
+                self.last_latency_seconds = 1.25
+
+            def chat(self, **kwargs):
+                self.kwargs = kwargs
+                return "## Executive Summary\n本次可见样本中，舆情总体保持中性。"
+
+        generator = ReportGenerator.__new__(ReportGenerator)
+        generator.provider = 'deepseek'
+        generator.client = FakeClient()
+        generator._save_cache = lambda *args: Path('/tmp/report.md')
+        result = generator.generate(
+            topic='测试',
+            stats={'total': 10, 'positive': 3, 'neutral': 5, 'negative': 2},
+            df=None, posts=[], keywords=[], use_cache=False, sampling={},
+        )
+        self.assertTrue(result['success'])
+        self.assertEqual(
+            generator.client.kwargs['max_tokens'], AI_REPORT_MAX_TOKENS
+        )
+        self.assertEqual(result['usage_info']['latency_seconds'], 1.25)
+        self.assertEqual(result['usage_info']['api_usage']['total_tokens'], 100)
 
     def test_nominal_count_confusion_is_displayed_with_scope_notice(self):
         class FakeClient:

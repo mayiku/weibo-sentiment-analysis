@@ -49,6 +49,8 @@ class LLMClient:
         self.base_url = base_url
         self.model = model
         self.last_error = None
+        self.last_usage = {}
+        self.last_latency_seconds = None
 
     def chat(self, prompt: str, system_prompt: str = None,
              temperature: float = None, max_tokens: int = None) -> Optional[str]:
@@ -81,6 +83,9 @@ class DeepSeekClient(LLMClient):
             model=model or DEEPSEEK_MODEL,
         )
         self._chat_url = f"{self.base_url}/chat/completions"
+        self.session = requests.Session()
+        self.last_usage = {}
+        self.last_latency_seconds = None
 
     def chat(self, prompt: str, system_prompt: str = None,
              temperature: float = None, max_tokens: int = None) -> Optional[str]:
@@ -130,9 +135,10 @@ class DeepSeekClient(LLMClient):
                  self.model, len(prompt), temperature)
 
         last_error = None
+        call_started = time.perf_counter()
         for attempt in range(DEEPSEEK_MAX_RETRIES):
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self._chat_url,
                     json=payload,
                     headers=headers,
@@ -143,16 +149,23 @@ class DeepSeekClient(LLMClient):
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"]
                     usage = data.get("usage", {})
-                    log.info("【DeepSeek】成功: tokens_in=%s, tokens_out=%s, total=%s",
+                    self.last_usage = dict(usage)
+                    self.last_latency_seconds = round(
+                        time.perf_counter() - call_started, 3
+                    )
+                    log.info("【DeepSeek】成功: tokens_in=%s, tokens_out=%s, total=%s, elapsed=%.2fs",
                              usage.get("prompt_tokens", "?"),
                              usage.get("completion_tokens", "?"),
-                             usage.get("total_tokens", "?"))
+                             usage.get("total_tokens", "?"),
+                             self.last_latency_seconds)
                     return content
 
                 elif resp.status_code == 429:
                     wait = min(2 ** attempt * 5, 60)
-                    log.warning("【DeepSeek】速率限制 (429)，等待 %ds...", wait)
-                    time.sleep(wait)
+                    self.last_error = "DeepSeek 请求频率受限 (HTTP 429)"
+                    if attempt < DEEPSEEK_MAX_RETRIES - 1:
+                        log.warning("【DeepSeek】速率限制 (429)，等待 %ds...", wait)
+                        time.sleep(wait)
 
                 elif resp.status_code == 401:
                     self.last_error = "DeepSeek API Key 无效 (HTTP 401)"
@@ -171,9 +184,11 @@ class DeepSeekClient(LLMClient):
 
                 elif resp.status_code >= 500:
                     wait = (attempt + 1) * 3
-                    log.warning("【DeepSeek】服务器错误 (%d)，%d/%d 重试，等待 %ds...",
-                                resp.status_code, attempt + 1, DEEPSEEK_MAX_RETRIES, wait)
-                    time.sleep(wait)
+                    self.last_error = f"DeepSeek 服务暂时不可用 (HTTP {resp.status_code})"
+                    if attempt < DEEPSEEK_MAX_RETRIES - 1:
+                        log.warning("【DeepSeek】服务器错误 (%d)，%d/%d 重试，等待 %ds...",
+                                    resp.status_code, attempt + 1, DEEPSEEK_MAX_RETRIES, wait)
+                        time.sleep(wait)
 
                 else:
                     log.error("【DeepSeek】HTTP %d: %s", resp.status_code, resp.text[:300])
@@ -185,16 +200,21 @@ class DeepSeekClient(LLMClient):
                 self.last_error = f"DeepSeek 请求超时 ({DEEPSEEK_TIMEOUT}s)"
                 log.warning("【DeepSeek】超时 (%ds)，%d/%d 重试...",
                             DEEPSEEK_TIMEOUT, attempt + 1, DEEPSEEK_MAX_RETRIES)
-                time.sleep(3)
+                if attempt < DEEPSEEK_MAX_RETRIES - 1:
+                    time.sleep(3)
 
             except requests.RequestException as e:
                 log.warning("【DeepSeek】网络异常: %s，%d/%d 重试...",
                             e, attempt + 1, DEEPSEEK_MAX_RETRIES)
-                time.sleep(3)
+                if attempt < DEEPSEEK_MAX_RETRIES - 1:
+                    time.sleep(3)
                 last_error = str(e)
                 self.last_error = f"DeepSeek 网络异常: {e}"
 
-        log.error("【DeepSeek】所有重试均失败。最后错误: %s", last_error or "未知")
+        log.error(
+            "【DeepSeek】所有重试均失败。最后错误: %s",
+            self.last_error or last_error or "未知",
+        )
         return None
 
     def chat_stream(self, prompt: str, system_prompt: str = None,
@@ -233,7 +253,7 @@ class DeepSeekClient(LLMClient):
         }
 
         try:
-            resp = requests.post(
+            resp = self.session.post(
                 self._chat_url,
                 json=payload,
                 headers=headers,

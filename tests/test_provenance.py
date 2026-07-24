@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -102,6 +103,55 @@ class ProvenanceTests(unittest.TestCase):
                 task = database.get_task(task_id)
                 self.assertEqual(task["processing_time"], 2.5)
                 self.assertEqual(task["model_memory"], 4.0)
+            finally:
+                database.DATABASE_PATH = original_path
+
+    def test_stale_running_tasks_are_closed_without_touching_completed_tasks(self):
+        original_path = database.DATABASE_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            database.DATABASE_PATH = Path(tmp) / "lifecycle.db"
+            try:
+                database.init_db()
+                stale_id = database.create_task("中断任务")
+                database.update_task_status(stale_id, "crawling")
+                completed_id = database.create_task("已完成任务")
+                database.update_task_status(completed_id, "completed")
+
+                conn = database.get_connection()
+                conn.execute(
+                    "UPDATE tasks SET updated_at='2026-07-24 00:00:00' WHERE id IN (?, ?)",
+                    (stale_id, completed_id),
+                )
+                conn.commit()
+                conn.close()
+
+                reconciled = database.reconcile_stale_tasks(
+                    stale_after_minutes=45,
+                    now=datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc),
+                )
+                self.assertEqual(reconciled, 1)
+                stale = database.get_task(stale_id)
+                completed = database.get_task(completed_id)
+                self.assertEqual(stale["status"], "failed")
+                self.assertIn("会话中断", stale["error_message"])
+                self.assertIsNotNone(stale["completed_at"])
+                self.assertEqual(completed["status"], "completed")
+            finally:
+                database.DATABASE_PATH = original_path
+
+    def test_interruption_guard_does_not_overwrite_terminal_task(self):
+        original_path = database.DATABASE_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            database.DATABASE_PATH = Path(tmp) / "guard.db"
+            try:
+                database.init_db()
+                task_id = database.create_task("测试")
+                self.assertTrue(database.touch_task(task_id))
+                database.update_task_status(task_id, "completed")
+                self.assertFalse(database.fail_task_if_active(task_id, "迟到的中断"))
+                task = database.get_task(task_id)
+                self.assertEqual(task["status"], "completed")
+                self.assertIsNone(task["error_message"])
             finally:
                 database.DATABASE_PATH = original_path
 

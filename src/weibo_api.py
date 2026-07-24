@@ -2,8 +2,8 @@
 微博 API 客户端 v2.0 — 高性能评论抓取
 
 优化:
-  1. 自动探测 buildComments 最大 count 参数
-  2. 每页评论数提升至允许上限 (20→60)
+  1. 使用已验证的 buildComments count 上限，避免重复探测
+  2. 自适应分页并记录实际可见窗口
   3. API 请求间隔降至 0.1~0.5s (自适应退避)
   4. 覆盖率追踪 (预期/实际/百分比)
   5. 递归提取二级回复 (nested replies)
@@ -62,7 +62,7 @@ class WeiboAPIClient:
         client = WeiboAPIClient()
         client.load_cookies_from_selenium(driver)
 
-        # 自动探测最优 count + 分页抓取全部评论 + 递归提取二级回复
+        # 分页抓取全部可见评论 + 递归提取二级回复
         comments, report = client.get_all_comments('5322786954281260')
         # report = {
         #   'expected_total': 456, 'actual_fetched': 432,
@@ -125,9 +125,6 @@ class WeiboAPIClient:
          }),
 
     ]
-
-    # ★ count 探测序列（从高到低试探）
-    _COUNT_PROBE_SEQUENCE = [60, 50, 40, 30, 20]
 
     # ★ 自适应延迟范围
     _DELAY_MIN = 0.08
@@ -283,47 +280,19 @@ class WeiboAPIClient:
 
     def _detect_max_count(self, mid: str) -> int:
         """
-        探测 buildComments API 允许的最大 count 参数。
+        返回当前已验证的 buildComments 页面容量。
 
-        策略: 从 60 → 50 → 40 → 30 → 20 依次请求 count 页，
-              取实际返回条数 ≥ 请求数的最大值。
-              缓存结果避免重复探测。
-
-        Returns: 最大可用 count (最小 20)
+        微博会把较大的 count 静默压回 20。旧版为确认这一点额外发送
+        5 次请求且丢弃响应，既慢又增加限流风险；现在直接使用配置值。
         """
         if self._detected_max_count is not None:
             return self._detected_max_count
-
-        log.info("  [PROBE] 探测 max_count (mid=%s)...", mid)
-
-        best_count = 20  # fallback minimum
-        for test_count in self._COUNT_PROBE_SEQUENCE:
-            data = self.get_comments_page(mid, max_id=0, count=test_count)
-            if not data:
-                log.info("    count=%d → API 无响应", test_count)
-                self._adaptive_wait(rate_limited=False)
-                continue
-
-            returned = len(data.get('data', []))
-            total = data.get('total_number', 0)
-
-            log.info("    count=%d → 返回 %d 条 (总 %d)", test_count, returned, total)
-
-            if returned >= test_count:
-                # API 返回了我们请求的数量 → 这个 count 可行
-                best_count = test_count
-                log.info("    ✓ count=%d 可用 (返回 %d 条)", test_count, returned)
-                break  # 从高到低，第一个可行的就是最大值
-            elif returned >= min(test_count, total):
-                # 帖子评论总数不够，无法判断
-                # 取 min(test_count, total) 是因为total可能<test_count
-                pass
-
-            self._adaptive_wait(rate_limited=False)
-
-        self._detected_max_count = best_count
-        log.info("  [PROBE] 最优 count = %d (每页)", best_count)
-        return best_count
+        self._detected_max_count = max(
+            1, min(int(CRAWLER_API_COMMENTS_PER_PAGE or 20), 20)
+        )
+        log.info("  [COUNT] 使用已验证页面容量 %d (mid=%s)",
+                 self._detected_max_count, mid)
+        return self._detected_max_count
 
     # ======================================================================
     # ★ 新增: 递归提取评论 + 二级回复
@@ -616,6 +585,7 @@ class WeiboAPIClient:
         consecutive_known_pages = 0
         known_records_seen = 0
         consecutive_errors = 0
+        successful_responses = 0
         nested_count_before = self._stats['nested_replies']
         errors_before = self._stats['errors']
         calls_before = self._stats['api_calls']
@@ -660,6 +630,7 @@ class WeiboAPIClient:
                 continue
 
             consecutive_errors = 0
+            successful_responses += 1
             batch = data.get('data', [])
 
             if not batch:
@@ -780,7 +751,7 @@ class WeiboAPIClient:
             'comment_records': comment_records,
             'known_records_seen': known_records_seen,
             'checkpoint_reached': incremental_checkpoint,
-            'request_succeeded': bool(page > 0 and errors_used == 0),
+            'request_succeeded': bool(successful_responses > 0 and errors_used == 0),
             'incremental_scan': bool(known_comment_ids),
             'new_fetched': actual,
         }
@@ -808,7 +779,8 @@ class WeiboAPIClient:
         elif visible_window_limited:
             log.warning("  ⚠ API 可见窗口提前结束 (%s)，标称评论数不等于可访问评论数",
                         stop_reason)
-        elif coverage < 80.0 and not truncated_by_pages and not known_comment_ids:
+        elif (expected_total > 0 and coverage < 80.0
+              and not truncated_by_pages and not known_comment_ids):
             log.warning("  ⚠ 覆盖率偏低 (%.1f%%)，可能存在删除评论、权限限制或过滤",
                         coverage)
 

@@ -7,7 +7,7 @@ import sqlite3
 import json
 import pandas as pd
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from config import DATABASE_PATH, REPORT_DIR
 
@@ -16,7 +16,10 @@ from src.quality import assess_result_quality, load_crawl_metadata
 
 log = get_logger(__name__)
 
-DATABASE_SCHEMA_VERSION = 4
+DATABASE_SCHEMA_VERSION = 5
+ACTIVE_TASK_STATUSES = (
+    'pending', 'crawling', 'cleaning', 'analyzing', 'generating_wordcloud'
+)
 TASK_COLUMN_MIGRATIONS = [
     ('total_posts', 'INTEGER DEFAULT 0'),
     ('structured_json', 'TEXT'),
@@ -38,6 +41,7 @@ TASK_COLUMN_MIGRATIONS = [
     ('representation_status', "TEXT DEFAULT 'unknown'"),
     ('report_path', 'TEXT'),
     ('report_provider', 'TEXT'),
+    ('updated_at', 'TIMESTAMP'),
 ]
 
 
@@ -57,10 +61,11 @@ def _ensure_columns(conn: sqlite3.Connection, table: str,
 def get_connection() -> sqlite3.Connection:
     """获取数据库连接"""
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DATABASE_PATH))
+    conn = sqlite3.connect(str(DATABASE_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -102,6 +107,7 @@ def init_db():
                 report_provider TEXT,
                 error_message   TEXT,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at    TIMESTAMP
             );
 
@@ -450,7 +456,8 @@ def create_task(topic: str, source: str = "crawler") -> int:
     conn = get_connection()
     try:
         cur = conn.execute(
-            "INSERT INTO tasks (topic, source, status) VALUES (?, ?, 'pending')",
+            """INSERT INTO tasks (topic, source, status, updated_at)
+               VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)""",
             (topic, source)
         )
         conn.commit()
@@ -465,18 +472,93 @@ def update_task_status(task_id: int, status: str, error_message: str = None):
     """更新任务状态"""
     conn = get_connection()
     try:
-        if status == "completed":
+        _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
+        if status in {"completed", "failed"}:
             conn.execute(
-                "UPDATE tasks SET status=?, error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                """UPDATE tasks SET status=?, error_message=?,
+                   updated_at=CURRENT_TIMESTAMP, completed_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
                 (status, error_message, task_id)
             )
         else:
             conn.execute(
-                "UPDATE tasks SET status=?, error_message=? WHERE id=?",
+                """UPDATE tasks SET status=?, error_message=?,
+                   updated_at=CURRENT_TIMESTAMP, completed_at=NULL WHERE id=?""",
                 (status, error_message, task_id)
             )
         conn.commit()
         log.info("任务 #%d 状态更新: %s", task_id, status)
+    finally:
+        conn.close()
+
+
+def touch_task(task_id: int) -> bool:
+    """刷新运行中任务的心跳；任务已结束时不再改写。"""
+    conn = get_connection()
+    try:
+        _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
+        placeholders = ','.join('?' for _ in ACTIVE_TASK_STATUSES)
+        cur = conn.execute(
+            f"""UPDATE tasks SET updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ({placeholders})""",
+            (task_id, *ACTIVE_TASK_STATUSES),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def fail_task_if_active(task_id: int, error_message: str) -> bool:
+    """仅在任务仍运行时将其结案，避免覆盖已经完成的结果。"""
+    conn = get_connection()
+    try:
+        _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
+        placeholders = ','.join('?' for _ in ACTIVE_TASK_STATUSES)
+        cur = conn.execute(
+            f"""UPDATE tasks SET status='failed', error_message=?,
+                updated_at=CURRENT_TIMESTAMP, completed_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ({placeholders})""",
+            (error_message, task_id, *ACTIVE_TASK_STATUSES),
+        )
+        conn.commit()
+        if cur.rowcount:
+            log.warning("任务 #%d 已从运行状态安全结案: %s", task_id, error_message)
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def reconcile_stale_tasks(stale_after_minutes: int = 45,
+                          now: datetime = None) -> int:
+    """将长时间没有心跳的运行中任务标记为失败。"""
+    if stale_after_minutes <= 0:
+        raise ValueError("stale_after_minutes must be positive")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    cutoff = current - timedelta(minutes=stale_after_minutes)
+    cutoff_text = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+    completed_text = current.strftime('%Y-%m-%d %H:%M:%S')
+
+    conn = get_connection()
+    try:
+        _ensure_columns(conn, 'tasks', TASK_COLUMN_MIGRATIONS)
+        placeholders = ','.join('?' for _ in ACTIVE_TASK_STATUSES)
+        message = (
+            f"任务超过 {stale_after_minutes} 分钟没有进度，可能因页面刷新或会话中断而停止。"
+        )
+        cur = conn.execute(
+            f"""UPDATE tasks SET status='failed', error_message=?,
+                updated_at=?, completed_at=?
+                WHERE status IN ({placeholders})
+                  AND COALESCE(updated_at, created_at) < ?""",
+            (message, completed_text, completed_text, *ACTIVE_TASK_STATUSES, cutoff_text),
+        )
+        conn.commit()
+        if cur.rowcount:
+            log.warning("自动结束 %d 个陈旧任务", cur.rowcount)
+        return cur.rowcount
     finally:
         conn.close()
 
@@ -504,7 +586,7 @@ def update_task_results(task_id: int, total: int, pos: int, neg: int, neu: int,
                expected_comments=?, fetched_comments=?, coverage_pct=?, requested_model=?,
                effective_model=?, model_version=?, fallback_used=?, fallback_reason=?,
                processing_time=?, model_memory=?, quality_status=?, quality_issues_json=?,
-               sampling_json=?, representation_status=? WHERE id=?""",
+               sampling_json=?, representation_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
             (total, unique_comments if unique_comments is not None else total, total_posts, pos, neg, neu, wordcloud_path, keywords_json, structured_json,
              raw_comments, expected_comments, fetched_comments, coverage_pct, requested_model,
              effective_model, model_version, int(bool(fallback_used)), fallback_reason,

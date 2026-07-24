@@ -1,20 +1,46 @@
 import unittest
 
 from src.weibo_api import WeiboAPIClient
+from src.crawler import _should_try_alternate_flow
 
 
 class WeiboApiReportingTests(unittest.TestCase):
-    def test_count_probe_is_reused_for_the_session(self):
+    def test_alternate_flow_is_limited_to_material_low_coverage_posts(self):
+        low_coverage = {
+            "request_succeeded": True,
+            "coverage_pct": 12.8,
+            "checkpoint_reached": False,
+        }
+        self.assertTrue(_should_try_alternate_flow(117, low_coverage, 0))
+        self.assertFalse(_should_try_alternate_flow(20, low_coverage, 0))
+        self.assertFalse(_should_try_alternate_flow(
+            117, {**low_coverage, "coverage_pct": 80.0}, 0
+        ))
+        self.assertFalse(_should_try_alternate_flow(
+            117, {**low_coverage, "checkpoint_reached": True}, 0
+        ))
+
+    def test_verified_count_is_reused_without_probe_requests(self):
         client = WeiboAPIClient()
         calls = []
-        client._adaptive_wait = lambda **_kwargs: None
         client.get_comments_page = lambda *_args, **kwargs: (
             calls.append(kwargs["count"]) or
             {"ok": 1, "data": [{"id": str(i)} for i in range(20)], "total_number": 100}
         )
         self.assertEqual(client._detect_max_count("first"), 20)
         self.assertEqual(client._detect_max_count("second"), 20)
-        self.assertEqual(calls, [60, 50, 40, 30, 20])
+        self.assertEqual(calls, [])
+
+    def test_valid_empty_response_does_not_count_as_api_failure(self):
+        client = WeiboAPIClient()
+        client._detect_max_count = lambda _mid: 20
+        client.get_comments_page = lambda *_args, **_kwargs: {
+            "ok": 1, "data": [], "max_id": 0, "total_number": 0,
+        }
+        comments, report = client.get_all_comments("mid")
+        self.assertEqual(comments, [])
+        self.assertTrue(report["request_succeeded"])
+        self.assertEqual(report["stop_reason"], "empty_page")
 
     def test_empty_page_is_reported_as_visible_window_limit(self):
         client = WeiboAPIClient()
