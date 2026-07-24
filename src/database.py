@@ -7,7 +7,6 @@ import sqlite3
 import json
 import pandas as pd
 import re
-from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from config import (
@@ -65,23 +64,18 @@ def _ensure_columns(conn: sqlite3.Connection, table: str,
             existing.add(column)
 
 
-@lru_cache(maxsize=2)
-def _get_turso_connection(database_url: str, auth_token: str):
-    """Create one reusable remote connection per Turso credential pair."""
+def _create_turso_connection(database_url: str, auth_token: str):
+    """Create a short-lived Turso connection for one database operation."""
     try:
         import libsql
     except ImportError as exc:
         raise RuntimeError("已配置 Turso，但缺少 libsql 依赖。") from exc
     raw = libsql.connect(database=database_url, auth_token=auth_token)
     raw.execute("PRAGMA foreign_keys=ON")
-    # Database helpers call close() after every operation. Keep the shared
-    # remote connection alive; local SQLite connections still close normally.
-    return LibSQLConnection(raw, close_connection=False)
-
-
-def clear_turso_connection_cache():
-    """Clear cached handles after credentials change or in isolated tests."""
-    _get_turso_connection.cache_clear()
+    # Hrana streams are server-scoped and can become invalid after Streamlit
+    # hot reloads. Short-lived handles avoid stale snapshots and stream-not-
+    # found failures; higher-level UI reads and bulk writes are cached/batched.
+    return LibSQLConnection(raw)
 
 
 def get_connection():
@@ -91,7 +85,7 @@ def get_connection():
             "Turso 配置不完整：TURSO_DATABASE_URL 和 TURSO_AUTH_TOKEN 必须同时设置。"
         )
     if TURSO_DATABASE_URL:
-        return _get_turso_connection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
+        return _create_turso_connection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
 
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DATABASE_PATH), timeout=30.0)

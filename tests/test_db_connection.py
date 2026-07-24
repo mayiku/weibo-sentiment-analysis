@@ -9,12 +9,6 @@ from src.db_connection import LibSQLConnection, MappingRow
 
 
 class LibSQLConnectionTests(unittest.TestCase):
-    def setUp(self):
-        database.clear_turso_connection_cache()
-
-    def tearDown(self):
-        database.clear_turso_connection_cache()
-
     def test_mapping_row_supports_tuple_and_named_access(self):
         row = MappingRow(["id", "name"], [1, "Alice"])
         self.assertEqual(row[0], 1)
@@ -52,18 +46,18 @@ class LibSQLConnectionTests(unittest.TestCase):
         )
         conn.close()
 
-    def test_turso_connection_is_reused_across_database_operations(self):
-        raw = libsql.connect(":memory:")
-        with patch.object(database, "TURSO_DATABASE_URL", "libsql://reuse.turso.io"), patch.object(
+    def test_turso_connection_is_not_reused_across_database_operations(self):
+        raw_connections = [libsql.connect(":memory:"), libsql.connect(":memory:")]
+        with patch.object(database, "TURSO_DATABASE_URL", "libsql://fresh.turso.io"), patch.object(
             database, "TURSO_AUTH_TOKEN", "secret"
-        ), patch("libsql.connect", return_value=raw) as connect_mock:
+        ), patch("libsql.connect", side_effect=raw_connections) as connect_mock:
             first = database.get_connection()
             first.close()
             second = database.get_connection()
-            second.execute("SELECT 1").fetchone()
+            second.close()
 
-        self.assertIs(first, second)
-        connect_mock.assert_called_once()
+        self.assertIsNot(first, second)
+        self.assertEqual(connect_mock.call_count, 2)
 
     def test_partial_turso_configuration_fails_explicitly(self):
         with patch.object(database, "TURSO_DATABASE_URL", "libsql://example.turso.io"), patch.object(
