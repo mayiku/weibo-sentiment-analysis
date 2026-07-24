@@ -295,6 +295,53 @@ def get_series(topic: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def get_series_snapshot(topic: str) -> list[dict[str, Any]]:
+    """Rebuild the durable post/comment snapshot for disaster recovery."""
+    conn = get_connection()
+    try:
+        series = conn.execute(
+            "SELECT id FROM crawl_series WHERE topic=?", (topic,)
+        ).fetchone()
+        if not series:
+            return []
+        series_id = int(series["id"])
+        checkpoints = conn.execute(
+            "SELECT * FROM crawl_checkpoints WHERE series_id=? ORDER BY expected_total DESC",
+            (series_id,),
+        ).fetchall()
+        observations = conn.execute(
+            """SELECT weibo_id, comment_id, content
+               FROM crawl_observations WHERE series_id=?
+               ORDER BY weibo_id, first_seen_at, comment_key""",
+            (series_id,),
+        ).fetchall()
+        observations_by_post: dict[str, list] = {}
+        for row in observations:
+            observations_by_post.setdefault(str(row["weibo_id"]), []).append(row)
+
+        posts = []
+        for checkpoint in checkpoints:
+            meta = json.loads(checkpoint["metadata_json"] or "{}")
+            rows = observations_by_post.get(str(checkpoint["weibo_id"]), [])
+            if not rows:
+                continue
+            posts.append({
+                "weibo_id": str(checkpoint["weibo_id"]),
+                "username": meta.get("username", ""),
+                "post_content": meta.get("post_content", ""),
+                "post_time": meta.get("post_time", ""),
+                "comment_count": checkpoint["expected_total"],
+                "url": meta.get("url", ""),
+                "comment_records": [
+                    {"comment_id": row["comment_id"], "text": row["content"]}
+                    for row in rows
+                ],
+            })
+        return posts
+    finally:
+        conn.close()
+
+
 def get_known_comment_ids(series_id: int, weibo_id: str) -> set[str]:
     """Return stable IDs already observed for one post."""
     conn = get_connection()

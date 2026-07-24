@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src import database
-from src.incremental import begin_run, get_series, merge_snapshot
+from src.incremental import begin_run, get_series, get_series_snapshot, merge_snapshot
 
 
 class IncrementalCollectionTests(unittest.TestCase):
@@ -43,6 +43,12 @@ class IncrementalCollectionTests(unittest.TestCase):
                 self.assertEqual(meta2["total_unique_comments"], 3)
                 self.assertEqual(len(cumulative2[0]["comments"]), 3)
                 self.assertEqual(get_series("测试话题")["last_run"]["status"], "completed")
+                recovered = get_series_snapshot("测试话题")
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(
+                    [record["comment_id"] for record in recovered[0]["comment_records"]],
+                    ["c1", "c2", "c3"],
+                )
 
     def test_snapshot_uses_constant_number_of_remote_round_trips(self):
         class CountingConnection:

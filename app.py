@@ -388,6 +388,51 @@ def _find_recovery_candidate(tasks: list[dict]):
             continue
         prefix = f"weibo_topic_{task.get('topic', '')}_"
         matches = [path for path in csv_files if path.stem.startswith(prefix)]
+        if not matches:
+            try:
+                from src.incremental import get_series_snapshot
+                posts = get_series_snapshot(str(task.get('topic', '')))
+                rows = []
+                for post in posts:
+                    for record in post.get('comment_records', []):
+                        rows.append({
+                            '评论内容': str(record.get('text', '')),
+                            '评论ID': str(record.get('comment_id', '')),
+                            '帖子ID': str(post.get('weibo_id', '')),
+                            '用户名': str(post.get('username', '')),
+                            '帖子内容': str(post.get('post_content', '')),
+                            '帖子评论数': int(post.get('comment_count', 0) or 0),
+                            '发布时间': str(post.get('post_time', '')),
+                        })
+                if rows:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    recovered_csv = DATA_DIR / (
+                        f"weibo_topic_{task.get('topic', '')}_{timestamp}_turso_recovery.csv"
+                    )
+                    pd.DataFrame(rows).to_csv(
+                        recovered_csv, index=False, encoding='utf-8-sig'
+                    )
+                    structured_posts = [{
+                        'weibo_id': post.get('weibo_id', ''),
+                        'username': post.get('username', ''),
+                        'content': post.get('post_content', ''),
+                        'comment_count_on_card': post.get('comment_count', 0),
+                        'post_time': post.get('post_time', ''),
+                        'url': post.get('url', ''),
+                    } for post in posts]
+                    recovered_csv.with_name(
+                        f"{recovered_csv.stem}_structured.json"
+                    ).write_text(
+                        json.dumps({'posts': structured_posts}, ensure_ascii=False),
+                        encoding='utf-8',
+                    )
+                    log.warning(
+                        "任务 #%s 从 Turso 增量观测恢复 %d 条评论",
+                        task.get('id'), len(rows),
+                    )
+                    matches = [recovered_csv]
+            except Exception as exc:
+                log.warning("Turso 中断恢复快照生成失败: %s", exc)
         if matches:
             return {
                 'task': task,
