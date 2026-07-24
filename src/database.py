@@ -630,6 +630,40 @@ def update_task_results(task_id: int, total: int, pos: int, neg: int, neu: int,
         conn.close()
 
 
+def _insert_rows_in_chunks(conn, table: str, columns: tuple[str, ...],
+                           records: list[tuple], chunk_size: int = 500) -> None:
+    """Insert rows with multi-value SQL so each chunk is one remote request."""
+    if not records:
+        return
+    row_placeholder = f"({','.join('?' for _ in columns)})"
+    column_sql = ", ".join(columns)
+    total_chunks = (len(records) + chunk_size - 1) // chunk_size
+    for chunk_index, start in enumerate(range(0, len(records), chunk_size), 1):
+        chunk = records[start:start + chunk_size]
+        values_sql = ",".join(row_placeholder for _ in chunk)
+        parameters = tuple(value for record in chunk for value in record)
+        conn.execute(
+            f"INSERT INTO {table} ({column_sql}) VALUES {values_sql}",
+            parameters,
+        )
+        if total_chunks > 1 and (
+            chunk_index == 1 or chunk_index == total_chunks or chunk_index % 5 == 0
+        ):
+            log.info("批量写入 %s: %d/%d 批", table, chunk_index, total_chunks)
+
+
+def clear_task_analysis_data(task_id: int) -> None:
+    """Remove incomplete derived rows before an idempotent task recovery."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM comments WHERE task_id=?", (task_id,))
+        conn.execute("DELETE FROM posts WHERE task_id=?", (task_id,))
+        conn.execute("DELETE FROM keywords WHERE task_id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def insert_posts(task_id: int, posts: list[dict]) -> list[int]:
     """
     批量插入帖子数据，返回 post_id 列表。
@@ -643,18 +677,27 @@ def insert_posts(task_id: int, posts: list[dict]) -> list[int]:
         [post_id, ...] 按插入顺序
     """
     conn = get_connection()
-    post_ids = []
     try:
-        for p in posts:
-            cur = conn.execute(
-                """INSERT INTO posts (task_id, weibo_id, username, content, comment_count, post_time, url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (task_id, p['weibo_id'], p.get('username', ''),
-                 p.get('content', ''), p.get('comment_count', 0),
-                 p.get('post_time', ''), p.get('url', ''))
+        records = [
+            (
+                task_id, p['weibo_id'], p.get('username', ''),
+                p.get('content', ''), p.get('comment_count', 0),
+                p.get('post_time', ''), p.get('url', ''),
             )
-            post_ids.append(cur.lastrowid)
+            for p in posts
+        ]
+        _insert_rows_in_chunks(
+            conn, "posts",
+            ("task_id", "weibo_id", "username", "content", "comment_count", "post_time", "url"),
+            records,
+        )
         conn.commit()
+        rows = conn.execute(
+            "SELECT id, weibo_id FROM posts WHERE task_id=? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        post_id_by_weibo = {str(row['weibo_id']): int(row['id']) for row in rows}
+        post_ids = [post_id_by_weibo[str(post['weibo_id'])] for post in posts]
         log.info("任务 #%d: 插入 %d 条帖子", task_id, len(post_ids))
         return post_ids
     finally:
@@ -682,13 +725,18 @@ def insert_comments(task_id: int, df: pd.DataFrame):
             records.append(record)
 
         if has_post_id:
-            conn.executemany(
-                "INSERT INTO comments (task_id, content, cleaned_content, nlp_result, nlp_score, nlp_confidence, duplicate_count, post_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", records)
+            columns = (
+                "task_id", "content", "cleaned_content", "nlp_result",
+                "nlp_score", "nlp_confidence", "duplicate_count", "post_id",
+            )
         else:
-            conn.executemany(
-                "INSERT INTO comments (task_id, content, cleaned_content, nlp_result, nlp_score, nlp_confidence, duplicate_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)", records)
+            columns = (
+                "task_id", "content", "cleaned_content", "nlp_result",
+                "nlp_score", "nlp_confidence", "duplicate_count",
+            )
+        _insert_rows_in_chunks(
+            conn, "comments", columns, [tuple(record) for record in records]
+        )
         conn.commit()
         log.info("任务 #%d: 插入 %d 条评论", task_id, len(records))
     finally:
@@ -699,9 +747,9 @@ def insert_keywords(task_id: int, keywords: list):
     """批量插入关键词"""
     conn = get_connection()
     try:
-        conn.executemany(
-            "INSERT INTO keywords (task_id, word, frequency) VALUES (?, ?, ?)",
-            [(task_id, w, f) for w, f in keywords]
+        _insert_rows_in_chunks(
+            conn, "keywords", ("task_id", "word", "frequency"),
+            [(task_id, w, f) for w, f in keywords],
         )
         conn.commit()
         log.info("任务 #%d: 插入 %d 个关键词", task_id, len(keywords))

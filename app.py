@@ -29,6 +29,7 @@ from src.database import (
     insert_comments, insert_keywords, insert_posts,
     get_task, get_all_tasks, get_task_comments, get_task_posts,
     get_structured_data, delete_task, update_task_report,
+    clear_task_analysis_data,
 )
 from src.task_lifecycle import (
     fail_task_if_active,
@@ -371,6 +372,30 @@ def _get_recent_tasks(limit: int = 20):
     return get_all_tasks(limit=limit)
 
 
+def _find_recovery_candidate(tasks: list[dict]):
+    """Find the newest interrupted crawler task with a preserved raw CSV."""
+    recoverable_statuses = {
+        'pending', 'crawling', 'cleaning', 'analyzing',
+        'generating_wordcloud', 'failed',
+    }
+    csv_files = list(DATA_DIR.glob("weibo_topic_*.csv"))
+    for task in tasks:
+        if (
+            task.get('source') != 'crawler'
+            or task.get('status') not in recoverable_statuses
+            or int(task.get('total_comments') or 0) > 0
+        ):
+            continue
+        prefix = f"weibo_topic_{task.get('topic', '')}_"
+        matches = [path for path in csv_files if path.stem.startswith(prefix)]
+        if matches:
+            return {
+                'task': task,
+                'csv_path': max(matches, key=lambda path: path.stat().st_mtime),
+            }
+    return None
+
+
 _reconcile_stale_tasks_periodically(DATABASE_SCHEMA_VERSION)
 
 
@@ -468,6 +493,9 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
             structured_payload = {}
 
     # 插入完整帖子集合；CSV 仅包含有评论帖子，因此作为上传数据的回退来源。
+    # A stopped recovery may leave committed posts but no comments. Reset only
+    # this task's derived rows before rebuilding them from the preserved CSV.
+    clear_task_analysis_data(task_id)
     weibo_id_to_db_post_id = {}
     total_posts = 0
     posts_to_insert = []
@@ -780,6 +808,19 @@ with st.sidebar:
     # 历史记录
     st.subheader("历史任务")
     tasks = _get_recent_tasks(limit=20)
+    recovery_candidate = _find_recovery_candidate(tasks)
+    recovery_btn = False
+    if recovery_candidate:
+        recovery_task = recovery_candidate['task']
+        recovery_csv = recovery_candidate['csv_path']
+        st.warning(
+            f"发现可恢复的中断任务 #{recovery_task['id']} · "
+            f"{recovery_task['topic']} · {recovery_csv.name}"
+        )
+        recovery_btn = st.button(
+            "恢复中断分析", type="primary", width='stretch'
+        )
+        st.divider()
     if tasks:
         for t in tasks:
             status_label = {
@@ -832,6 +873,36 @@ with st.sidebar:
 
 # ── 主区域 ─────────────────────────────────────────────
 # 处理分析请求
+if recovery_btn:
+    recovery_task = recovery_candidate['task']
+    recovery_csv = recovery_candidate['csv_path']
+    recovery_task_id = int(recovery_task['id'])
+    recovery_topic = str(recovery_task['topic'])
+    recovery_model = recovery_task.get('requested_model') or st.session_state.get(
+        'selected_model', 'hybrid'
+    )
+    with st.status("正在恢复中断分析", expanded=True) as recovery_status:
+        st.write(f"从保留的 CSV 恢复 · {recovery_csv.name}")
+        try:
+            recovered_result = run_pipeline(
+                recovery_topic,
+                str(recovery_csv),
+                recovery_task_id,
+                model_type=recovery_model,
+            )
+        except BaseException as exc:
+            fail_task_if_active(
+                recovery_task_id,
+                f"中断恢复失败：{str(exc) or type(exc).__name__}",
+            )
+            raise
+        recovery_status.update(label="中断分析已恢复", state="complete")
+        st.session_state.result = recovered_result
+        st.session_state.task_id = recovery_task_id
+        st.session_state['current_topic'] = recovery_topic
+        _get_recent_tasks.clear()
+        st.rerun()
+
 if start_btn:
     if input_mode == "上传 CSV":
         # 上传 CSV 模式
