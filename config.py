@@ -35,6 +35,11 @@ CHROMEDRIVER_PATH = ROOT_DIR / "chromedriver-win64" / "chromedriver.exe"
 # SQLite 数据库路径
 DATABASE_PATH = DATA_DIR / "sentiment_system.db"
 
+# Optional Turso/libSQL backend. When both values are present, all application
+# records use the remote database; local SQLite remains the development fallback.
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+
 # Cookie 缓存文件
 COOKIE_FILE = COOKIE_DIR / "weibo_cookies.pkl"
 

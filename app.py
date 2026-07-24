@@ -14,7 +14,14 @@ import streamlit as st
 # 确保项目根目录在 import 路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import OUTPUT_DIR, DATA_DIR, TOP_KEYWORDS_N, REPORT_DIR, WEIBO_COOKIE
+from config import (
+    DATA_DIR,
+    OUTPUT_DIR,
+    REPORT_DIR,
+    TOP_KEYWORDS_N,
+    TURSO_DATABASE_URL,
+    WEIBO_COOKIE,
+)
 from src.logger import get_logger, get_log_file
 from src.database import (
     DATABASE_SCHEMA_VERSION,
@@ -605,6 +612,9 @@ with st.sidebar:
 
     # 日志文件信息
     st.caption(f"当前实例日志 · {get_log_file().name}")
+    st.caption(
+        f"数据存储 · {'Turso Cloud' if TURSO_DATABASE_URL else '本地 SQLite'}"
+    )
 
     st.divider()
 

@@ -41,3 +41,6 @@ psutil>=6,<8                  # 系统监控
 
 # 序列化
 msgpack>=1.0,<2               # 高效的序列化格式
+
+# 持久化数据库（Streamlit Cloud 配置TURSO_DATABASE_URL后启用）
+libsql==0.1.11

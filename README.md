@@ -28,11 +28,17 @@ AI_PROVIDER = "deepseek"
 DEEPSEEK_API_KEY = "your-key"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_MODEL = "deepseek-chat"
+TURSO_DATABASE_URL = "libsql://your-database.turso.io"
+TURSO_AUTH_TOKEN = "your-turso-token"
 CRAWLER_HEADLESS = "true"
 SENTIMENT_GPU_ENABLED = "false"
 ```
 
 5. 点击 Deploy。
+
+`TURSO_DATABASE_URL` 与 `TURSO_AUTH_TOKEN` 必须同时配置。未配置时应用
+回退到本地 SQLite；Turso Token 只能存放在 Streamlit Secrets 或本地
+`.env`，不得提交到 Git。
 
 云端免费实例默认安装轻量依赖，稳定支持 SnowNLP 与 Hybrid。Paddle/BERT 保留在本地完整依赖中。微博实时采集依赖登录 Cookie 和平台可见窗口，答辩时建议以示例 CSV 作为稳定演示路径。
 

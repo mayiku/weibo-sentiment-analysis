@@ -9,8 +9,14 @@ import pandas as pd
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from config import DATABASE_PATH, REPORT_DIR
+from config import (
+    DATABASE_PATH,
+    REPORT_DIR,
+    TURSO_AUTH_TOKEN,
+    TURSO_DATABASE_URL,
+)
 
+from src.db_connection import LibSQLConnection
 from src.logger import get_logger
 from src.quality import assess_result_quality, load_crawl_metadata
 
@@ -58,8 +64,24 @@ def _ensure_columns(conn: sqlite3.Connection, table: str,
             existing.add(column)
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection():
     """获取数据库连接"""
+    if bool(TURSO_DATABASE_URL) != bool(TURSO_AUTH_TOKEN):
+        raise RuntimeError(
+            "Turso 配置不完整：TURSO_DATABASE_URL 和 TURSO_AUTH_TOKEN 必须同时设置。"
+        )
+    if TURSO_DATABASE_URL:
+        try:
+            import libsql
+        except ImportError as exc:
+            raise RuntimeError("已配置 Turso，但缺少 libsql 依赖。") from exc
+        raw = libsql.connect(
+            database=TURSO_DATABASE_URL,
+            auth_token=TURSO_AUTH_TOKEN,
+        )
+        raw.execute("PRAGMA foreign_keys=ON")
+        return LibSQLConnection(raw)
+
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DATABASE_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -204,7 +226,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_crawl_observations_series ON crawl_observations(series_id);
         """)
         conn.commit()
-        log.info("数据库初始化完成: %s", DATABASE_PATH)
+        log.info(
+            "数据库初始化完成: %s",
+            "Turso Cloud" if TURSO_DATABASE_URL else DATABASE_PATH,
+        )
 
         # Schema migration for v2.0 — handle existing databases
         _migrate_schema(conn)
@@ -719,10 +744,13 @@ def get_task_comments(task_id: int) -> pd.DataFrame:
     """获取某个任务的所有评论"""
     conn = get_connection()
     try:
-        df = pd.read_sql_query(
-            "SELECT * FROM comments WHERE task_id=? ORDER BY id", conn, params=(task_id,)
+        cursor = conn.execute(
+            "SELECT * FROM comments WHERE task_id=? ORDER BY id", (task_id,)
         )
-        return df
+        columns = [column[0] for column in (cursor.description or [])]
+        return pd.DataFrame(
+            [tuple(row) for row in cursor.fetchall()], columns=columns
+        )
     finally:
         conn.close()
 
