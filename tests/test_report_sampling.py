@@ -117,6 +117,44 @@ class ReportSamplingTests(unittest.TestCase):
         self.assertIn('趋势判断基于单次采样，仅供参考', result['report'])
         self.assertIn('unsupported_temporal_claim', result['usage_info']['guardrail_warnings'])
 
+    def test_nominal_count_confusion_is_displayed_with_scope_notice(self):
+        class FakeClient:
+            api_key = 'test-key'
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, **kwargs):
+                self.calls += 1
+                return "## 样本\n该帖子获得32565条评论。"
+
+        generator = ReportGenerator.__new__(ReportGenerator)
+        generator.provider = 'deepseek'
+        generator.client = FakeClient()
+        generator._save_cache = lambda *args: Path('/tmp/report.md')
+
+        result = generator.generate(
+            topic='测试',
+            stats={'total': 379, 'positive': 200, 'neutral': 100, 'negative': 79},
+            df=None,
+            posts=[],
+            keywords=[],
+            use_cache=False,
+            sampling={'per_post': [{
+                'expected_comments': 32565,
+                'fetched_comments': 379,
+            }]},
+        )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(generator.client.calls, 1)
+        self.assertIn('微博卡片标称值', result['report'])
+        self.assertIn('32565条评论', result['report'])
+        self.assertIn(
+            'nominal_count_presented_as_sample',
+            result['usage_info']['guardrail_warnings'],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

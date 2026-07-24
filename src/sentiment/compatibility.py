@@ -84,6 +84,12 @@ def analyze_sentiment(
         )
         results = analyzer.analyze_batch(texts)
         _validate_results(texts, results, requested_model)
+        partial_fallback_count = int(getattr(analyzer, "partial_fallback_count", 0) or 0)
+        if partial_fallback_count:
+            effective_model = f"{requested_model}+snownlp"
+            fallback_reason = (
+                f"DeepSeek 结构化输出异常，{partial_fallback_count} 条评论局部降级到 SnowNLP"
+            )
     except Exception as exc:
         if requested_model == "snownlp":
             raise
@@ -93,6 +99,7 @@ def analyze_sentiment(
         results = analyzer.analyze_batch(texts)
         _validate_results(texts, results, "snownlp")
         effective_model = "snownlp"
+        partial_fallback_count = 0
 
     output = df.copy()
     output["nlp_result"] = [result.label for result in results]
@@ -109,6 +116,7 @@ def analyze_sentiment(
         "model_provider": model_info.get("provider", ""),
         "fallback_used": effective_model != requested_model,
         "fallback_reason": fallback_reason,
+        "partial_fallback_count": partial_fallback_count,
     }
 
     counts = output["nlp_result"].value_counts().to_dict()

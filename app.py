@@ -484,6 +484,7 @@ def run_pipeline(topic: str, csv_path: str, task_id: int, model_type: str = None
         neutral=stats['neutral'],
         coverage_pct=crawl_metadata['coverage_pct'],
         fallback_used=analysis_metadata.get('fallback_used', False),
+        fallback_count=analysis_metadata.get('partial_fallback_count', 0),
         raw_comments=cleaning_metadata.get('raw_comments'),
     )
 

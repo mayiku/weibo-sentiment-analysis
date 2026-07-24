@@ -30,6 +30,20 @@ class QualityAssessmentTests(unittest.TestCase):
         self.assertEqual(result["status"], "warning")
         self.assertIn("single_class_distribution", [i["code"] for i in result["issues"]])
 
+    def test_partial_model_fallback_reports_affected_scope(self):
+        result = assess_result_quality(
+            total=100,
+            positive=50,
+            negative=30,
+            neutral=20,
+            fallback_used=True,
+            fallback_count=2,
+        )
+        fallback_issue = next(
+            issue for issue in result['issues'] if issue['code'] == 'model_fallback'
+        )
+        self.assertIn('2 条评论局部使用备用模型', fallback_issue['message'])
+
     def test_count_mismatch_is_invalid(self):
         result = assess_result_quality(
             total=10, positive=5, negative=2, neutral=2

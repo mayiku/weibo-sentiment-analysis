@@ -8,6 +8,7 @@ import time
 from typing import Any, List
 
 from config import (
+    DEEPSEEK_SENTIMENT_BATCH_RETRIES,
     DEEPSEEK_SENTIMENT_BATCH_SIZE,
     DEEPSEEK_SENTIMENT_MAX_TEXT_LENGTH,
 )
@@ -30,12 +31,18 @@ class DeepSeekSentimentAnalyzer(SentimentAnalyzer):
     """Classify comments in validated JSON batches using DeepSeek Chat."""
 
     def __init__(self, client: Any = None, batch_size: int = None,
-                 max_text_length: int = None):
+                 max_text_length: int = None, batch_retries: int = None):
         self.client = client or DeepSeekClient()
         self.batch_size = max(1, int(batch_size or DEEPSEEK_SENTIMENT_BATCH_SIZE))
+        self.batch_retries = max(
+            1, int(batch_retries or DEEPSEEK_SENTIMENT_BATCH_RETRIES)
+        )
         self.max_text_length = max(
             40, int(max_text_length or DEEPSEEK_SENTIMENT_MAX_TEXT_LENGTH)
         )
+        self.partial_fallback_count = 0
+        self.partial_fallback_reasons: list[str] = []
+        self._snow_fallback = None
         super().__init__()
 
     def _get_model_info(self) -> ModelInfo:
@@ -54,11 +61,58 @@ class DeepSeekSentimentAnalyzer(SentimentAnalyzer):
     def analyze_batch(self, texts: List[str], **kwargs) -> List[SentimentResult]:
         if not texts:
             return []
+        self.partial_fallback_count = 0
+        self.partial_fallback_reasons = []
         results: list[SentimentResult] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start:start + self.batch_size]
-            results.extend(self._analyze_api_batch(batch))
+            results.extend(self._analyze_resilient_batch(batch))
         return results
+
+    def _analyze_resilient_batch(self, texts: list[str]) -> list[SentimentResult]:
+        """Retry malformed model output, then split only the failed batch."""
+        last_error = None
+        for attempt in range(1, self.batch_retries + 1):
+            try:
+                return self._analyze_api_batch(texts)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_recoverable_batch_error(exc):
+                    raise
+                log.warning(
+                    "DeepSeek 情绪批次格式异常 (%d 条, %d/%d): %s",
+                    len(texts), attempt, self.batch_retries, exc,
+                )
+
+        if len(texts) > 1:
+            midpoint = len(texts) // 2
+            log.warning(
+                "DeepSeek 情绪批次连续失败，拆分为 %d + %d 条重试",
+                midpoint, len(texts) - midpoint,
+            )
+            return (
+                self._analyze_resilient_batch(texts[:midpoint])
+                + self._analyze_resilient_batch(texts[midpoint:])
+            )
+
+        # A single malformed item must not discard hundreds of successful
+        # DeepSeek classifications. Degrade this item only and record scope.
+        from .snow_analyzer import SnowNLPAnalyzer
+
+        if self._snow_fallback is None:
+            self._snow_fallback = SnowNLPAnalyzer()
+        fallback = self._snow_fallback.analyze_batch(texts)
+        for result in fallback:
+            result.analysis = f"DeepSeek局部降级: {result.analysis}"
+        self.partial_fallback_count += len(texts)
+        self.partial_fallback_reasons.append(str(last_error))
+        log.warning("DeepSeek 单条格式仍异常，仅该条降级到 SnowNLP: %s", last_error)
+        return fallback
+
+    @staticmethod
+    def _is_recoverable_batch_error(exc: Exception) -> bool:
+        """Only split/retry malformed structured output, not auth/network failures."""
+        return str(exc).startswith("DeepSeek 返回")
 
     def _analyze_api_batch(self, texts: list[str]) -> list[SentimentResult]:
         started = time.perf_counter()
@@ -70,15 +124,15 @@ class DeepSeekSentimentAnalyzer(SentimentAnalyzer):
             "请对以下微博评论进行情绪三分类。必须结合否定、反问、讽刺、emoji、"
             "饭圈黑话和上下文语气判断。积极=明确支持/喜爱；消极=批评/嘲讽/不满；"
             "中性=事实陈述、信息不足或无明显态度。\n"
-            "只返回 JSON 数组，不要 Markdown。每项严格包含 id、label、confidence、reason；"
-            "label 只能是积极、中性、消极，confidence 是 0 到 1，reason 不超过20字。\n"
+            "只返回 JSON 数组，不要 Markdown。每项严格且仅包含 id、label、confidence；"
+            "label 只能是积极、中性、消极，confidence 是 0 到 1。\n"
             f"输入：{json.dumps(items, ensure_ascii=False)}"
         )
         response = self.client.chat(
             prompt,
             system_prompt="你是严格、可复核的中文社交媒体情绪分类器。",
             temperature=0.0,
-            max_tokens=max(600, len(texts) * 55),
+            max_tokens=max(400, len(texts) * 35),
         )
         if not response:
             error = getattr(self.client, "last_error", None) or "API 未返回内容"
@@ -92,12 +146,13 @@ class DeepSeekSentimentAnalyzer(SentimentAnalyzer):
             label = item["label"]
             confidence = item["confidence"]
             score = self._score_for(label, confidence)
+            reason = item.get('reason', '')
             output.append(SentimentResult(
                 label=label,
                 score=score,
                 confidence=confidence,
                 model_time=elapsed_per_item,
-                analysis=f"DeepSeek语义判断: {item.get('reason', '')}".rstrip(),
+                analysis=f"DeepSeek语义判断: {reason}" if reason else "DeepSeek语义判断",
                 enhanced=True,
             ))
         log.info("DeepSeek 情绪批次完成: %d 条", len(output))

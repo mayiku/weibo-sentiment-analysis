@@ -158,6 +158,7 @@ def assess_result_quality(
     neutral: int,
     coverage_pct: float | None = None,
     fallback_used: bool = False,
+    fallback_count: int = 0,
     raw_comments: int | None = None,
 ) -> dict[str, Any]:
     """Classify whether a result is safe to present as a completed analysis."""
@@ -191,10 +192,15 @@ def assess_result_quality(
             "message": f"评论采集覆盖率仅 {coverage_pct:.1f}%，结果可能存在抽样偏差。",
         })
     if fallback_used:
+        fallback_message = (
+            f"DeepSeek 输出异常，{fallback_count} 条评论局部使用备用模型。"
+            if fallback_count and fallback_count < total
+            else "所选模型运行失败，本次结果由备用模型生成。"
+        )
         issues.append({
             "code": "model_fallback",
             "severity": "warning",
-            "message": "所选模型运行失败，本次结果由备用模型生成。",
+            "message": fallback_message,
         })
     if raw_comments is not None and raw_comments > 0 and total / raw_comments < 0.5:
         issues.append({

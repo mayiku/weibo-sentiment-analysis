@@ -46,8 +46,15 @@ class ReportGenerator:
       - 支持多 AI Provider (SiliconFlow/DeepSeek)
     """
 
-    _SOFT_GUARDRAIL_ISSUES = {'unsupported_temporal_claim'}
+    _SOFT_GUARDRAIL_ISSUES = {
+        'unsupported_temporal_claim',
+        'nominal_count_presented_as_sample',
+    }
     _SAMPLING_NOTICE = '> **证据边界提示：** 趋势判断基于单次采样，仅供参考。'
+    _NOMINAL_COUNT_NOTICE = (
+        '> **数据口径提示：** 帖子评论数为微博卡片标称值；'
+        '实际分析样本数以本报告的采样说明和评论总数为准。'
+    )
 
     def __init__(self, provider: str = None):
         """
@@ -117,7 +124,8 @@ class ReportGenerator:
             cached = self._load_cache(cache_key)
             if cached:
                 log.info("【报告】命中缓存: %s", cache_key[:16])
-                cached = self._add_sampling_notice(cached, sampling)
+                cached_issues = self._validate_report(cached, sampling)
+                cached = self._add_guardrail_notices(cached, sampling, cached_issues)
                 return {
                     'success': True,
                     'report': cached,
@@ -222,7 +230,7 @@ class ReportGenerator:
                     'error': 'AI 报告存在数据一致性问题，自动修订失败。请重试。',
                 }
 
-        report = self._add_sampling_notice(report, sampling)
+        report = self._add_guardrail_notices(report, sampling, guardrail_warnings)
 
         # ── 5. 保存缓存 ──
         cache_path = self._save_cache(cache_key, report, topic)
@@ -345,6 +353,18 @@ class ReportGenerator:
         if sampling.get('temporal_evidence') or self._SAMPLING_NOTICE in report:
             return report
         return f"{self._SAMPLING_NOTICE}\n\n{report}"
+
+    def _add_guardrail_notices(
+        self, report: str, sampling: dict, issues: list[str]
+    ) -> str:
+        """Turn recoverable evidence issues into visible report caveats."""
+        report = self._add_sampling_notice(report, sampling)
+        if (
+            'nominal_count_presented_as_sample' in issues
+            and self._NOMINAL_COUNT_NOTICE not in report
+        ):
+            report = f"{self._NOMINAL_COUNT_NOTICE}\n\n{report}"
+        return report
 
     def _build_repair_prompt(
         self, report: str, issues: list[str], sampling: dict,
