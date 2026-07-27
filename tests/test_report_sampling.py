@@ -22,7 +22,8 @@ class ReportSamplingTests(unittest.TestCase):
         self.assertIn("采集覆盖率 4.3%", prompt)
         self.assertIn("不能代表整体舆情", prompt)
         self.assertIn("不得把横截面数据写成时间趋势", prompt)
-        self.assertIn("1200-1800", prompt)
+        self.assertIn("不设置短篇幅上限", prompt)
+        self.assertIn("分析深度和证据完整性", prompt)
 
     def test_prompt_distinguishes_nominal_and_analyzed_post_counts(self):
         prompt = build_analysis_prompt(

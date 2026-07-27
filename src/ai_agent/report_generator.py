@@ -413,7 +413,7 @@ class ReportGenerator:
                    keywords: list, sampling: dict = None) -> str:
         """生成缓存键（基于输入数据的哈希）"""
         raw = json.dumps({
-            'report_format': 7,
+            'report_format': 8,
             'topic': topic,
             'stats': {k: v for k, v in stats.items() if k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
             'posts_count': len(posts),

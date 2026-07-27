@@ -1559,7 +1559,7 @@ if result:
         else:
             import hashlib
             cache_raw = json.dumps({
-                'report_format': 7,
+                'report_format': 8,
                 'topic': current_topic, 'keywords_top10': [w for w, _ in (result.get('keywords', []) or [])[:10]],
                 'stats': {k: result.get(k, 0) for k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
                 'posts_count': len(result.get('posts', [])),
@@ -1588,7 +1588,7 @@ if result:
             if from_cache:
                 st.caption(f"已缓存 · {datetime.fromtimestamp(cache_path.stat().st_mtime).strftime('%m-%d %H:%M')}")
             else:
-                st.caption("首次生成约需 30-60 秒，后续从缓存加载")
+                st.caption("DeepSeek 深度报告首次生成约需 60-120 秒，后续从缓存加载")
 
         if generate_btn:
             with st.spinner(f"{AI_PROVIDER} 正在生成分析报告..."):
