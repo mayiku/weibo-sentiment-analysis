@@ -38,6 +38,21 @@ class ReportSamplingTests(unittest.TestCase):
         )
         self.assertIn("微博标称 32565 条 | 实际分析 379 条 | 覆盖率 1.2%", prompt)
         self.assertIn("唯一评论文本**: 370", prompt)
+        self.assertIn("# 世界杯 微博舆情分析报告", prompt)
+        self.assertIn("**原帖原文｜@品牌**", prompt)
+        self.assertIn("> 帖子", prompt)
+        self.assertNotIn("**帖子 1**", prompt)
+        self.assertIn("禁止用“帖子 1 / 帖子 2 / 评论 3", prompt)
+
+    def test_report_format_removes_conversational_preamble_and_adds_h1(self):
+        report = ReportGenerator._normalize_report_format(
+            "好的，收到任务。作为资深专家，我将开始分析。\n\n"
+            "### Executive Summary｜执行摘要\n结论内容。",
+            "BLG",
+        )
+        self.assertTrue(report.startswith("# BLG 微博舆情分析报告"))
+        self.assertNotIn("好的，收到任务", report)
+        self.assertIn("### Executive Summary｜执行摘要", report)
 
     def test_report_validator_rejects_trend_and_nominal_confusion(self):
         generator = ReportGenerator.__new__(ReportGenerator)

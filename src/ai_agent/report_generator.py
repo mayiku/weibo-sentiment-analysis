@@ -179,6 +179,8 @@ class ReportGenerator:
                 'error': provider_error or f'{self.provider.upper()} API 调用失败。请检查 API Key 和网络连接。',
             }
 
+        report = self._normalize_report_format(report, topic)
+
         expected_report_date = crawl_time[:10]
         guardrail_issues = self._validate_report(report, sampling, expected_report_date)
         guardrail_warnings = [
@@ -220,7 +222,7 @@ class ReportGenerator:
                 if issue not in self._SOFT_GUARDRAIL_ISSUES
             ]
             if repaired and not repaired_blocking_issues:
-                report = repaired
+                report = self._normalize_report_format(repaired, topic)
                 guardrail_repaired = True
                 guardrail_warnings = [
                     issue for issue in repaired_issues
@@ -263,6 +265,17 @@ class ReportGenerator:
         }
 
     # ── 样本提取 ────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_report_format(report: str, topic: str) -> str:
+        """Remove conversational preambles and guarantee one report H1."""
+        text = str(report or '').strip()
+        heading_match = re.search(r"(?m)^#{1,3}\s+.+$", text)
+        if heading_match and heading_match.start() > 0:
+            text = text[heading_match.start():].lstrip()
+        if not re.match(r"^#\s+", text):
+            text = f"# {topic} 微博舆情分析报告\n\n{text}"
+        return text
 
     def _extract_samples(self, df, n: int = 8) -> dict:
         """从情感分析 DataFrame 提取各情绪样本评论"""
@@ -413,7 +426,7 @@ class ReportGenerator:
                    keywords: list, sampling: dict = None) -> str:
         """生成缓存键（基于输入数据的哈希）"""
         raw = json.dumps({
-            'report_format': 8,
+            'report_format': 9,
             'topic': topic,
             'stats': {k: v for k, v in stats.items() if k in ['positive', 'negative', 'neutral', 'total', 'unique_total']},
             'posts_count': len(posts),

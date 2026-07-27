@@ -28,7 +28,10 @@ SYSTEM_PROMPT = """你是一位资深的社交媒体舆情分析专家，拥有1
 - 使用中文
 - Markdown 格式（标题、列表、表格、粗体等）
 - 引用具体数据（百分比、排名等）
-- 每条结论对应数据支撑"""
+- 每条结论对应数据支撑
+- 禁止使用“好的”“收到任务”“作为舆情分析专家”等对话式开场
+- 第一行直接输出报告主标题，正文保持正式、客观的咨询报告语气
+- 引用帖子或评论时必须附上可核验的原文，不得只写“帖子2”“评论3”等编号"""
 
 
 # ============================================================================
@@ -93,6 +96,9 @@ ANALYSIS_REPORT_PROMPT = """## 任务
 
 请按以下专业咨询报告结构输出：
 
+第一行必须是：`# {topic} 微博舆情分析报告`
+主标题之前不得出现任何寒暄、任务复述、身份说明或写作过程说明。
+
 ### Executive Summary｜执行摘要
 
 - 用 2-3 句话总结整体舆情态势
@@ -142,6 +148,9 @@ ANALYSIS_REPORT_PROMPT = """## 任务
 - 关键词用 **粗体** 标注
 - 风险等级使用“低 / 中 / 高”文字标注，不使用 emoji
 - 评论引用用 > 引用块格式
+- 引用帖子或评论时，引用块中必须附原文；可同时注明作者和数据口径
+- 禁止用“帖子 1 / 帖子 2 / 评论 3 / 样本 4”等编号代替原文
+- 如果某项判断没有适合引用的原文，应明确写“当前样本未提供可直接引用的原文”，不得虚构引文
 - 每个章节之间用 --- 分隔
 - 若输出报告日期，必须使用采集日期 {crawl_date}，不得自行推算或改写日期
 - 所有总体判断必须写作“本次可见样本中”；覆盖率低于 20% 时明确标注“探索性结论，不能代表整体舆情”
@@ -234,7 +243,7 @@ def build_analysis_prompt(topic: str, stats: dict, posts: list,
         key=lambda post: int(post.get('comment_count', post.get('comment_count_on_card', 0)) or 0),
         reverse=True,
     )
-    for i, p in enumerate(ranked_posts[:10], 1):  # TOP 10 帖子
+    for p in ranked_posts[:10]:  # TOP 10 帖子
         username = p.get('username', '未知用户')
         content = p.get('content', p.get('post_content', ''))
         cc = p.get('comment_count', p.get('comment_count_on_card', 0))
@@ -247,7 +256,13 @@ def build_analysis_prompt(topic: str, stats: dict, posts: list,
                 evidence += f" | 实际分析 {fetched_post} 条"
             if coverage_post is not None:
                 evidence += f" | 覆盖率 {coverage_post:.1f}%"
-            posts_lines.append(f"**帖子 {i}** (@{username} | {evidence})\n\n{content}\n")
+            quoted_content = "\n".join(
+                f"> {line}" for line in str(content).splitlines() if line.strip()
+            )
+            posts_lines.append(
+                f"**原帖原文｜@{username}**\n\n{quoted_content}\n\n"
+                f"*数据口径：{evidence}*\n"
+            )
     posts_content = "\n".join(posts_lines) if posts_lines else "（无帖子数据）"
 
     # ── 关键词表格 ──
@@ -261,11 +276,12 @@ def build_analysis_prompt(topic: str, stats: dict, posts: list,
         if not comments:
             return "（无样本）"
         lines = []
-        for i, c in enumerate(comments[:max_n], 1):
-            # Truncate long comments
-            text = c if len(c) <= 200 else c[:200] + "..."
-            lines.append(f"{i}. {text}")
-        return "\n".join(lines)
+        for comment in comments[:max_n]:
+            text = str(comment).strip()
+            if text:
+                quoted = "\n".join(f"> {line}" for line in text.splitlines())
+                lines.append(quoted)
+        return "\n\n".join(lines)
 
     pos_samples = format_samples(samples.get('positive', []))
     neu_samples = format_samples(samples.get('neutral', []))
